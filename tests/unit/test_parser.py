@@ -1,11 +1,11 @@
-"""Tests for Gulf Coast parser — Tasks 1.7 and 1.8."""
+"""Tests for Gulf Coast parser — Tasks 1.7, 1.8, 1.9, 1.10."""
 
 from pathlib import Path
 
 import pytest
 
-from eurekan.core.crude import STANDARD_CUT_NAMES
-from eurekan.parsers.gulf_coast import GulfCoastParser, PIMS_PRODUCT_MAP
+from eurekan.core.crude import STANDARD_CUT_NAMES, CutProperties
+from eurekan.parsers.gulf_coast import GulfCoastParser, PIMS_PRODUCT_MAP, PIMS_COMPONENT_MAP
 
 DATA_FILE = Path("data/gulf_coast/Gulf_Coast.xlsx")
 
@@ -28,7 +28,22 @@ def library(parser: GulfCoastParser):
 
 @pytest.fixture(scope="module")
 def products(parser: GulfCoastParser):
-    return parser.parse_sell()
+    prods = parser.parse_sell()
+    parser.parse_blnspec(prods)
+    parser.parse_blnmix(prods)
+    return prods
+
+
+@pytest.fixture(scope="module")
+def blend_properties(parser: GulfCoastParser) -> dict[str, CutProperties]:
+    return parser.parse_blnnaph()
+
+
+@pytest.fixture(scope="module")
+def units(parser: GulfCoastParser):
+    u = parser.parse_caps()
+    parser.parse_proclim(u)
+    return u
 
 
 # ---------------------------------------------------------------------------
@@ -162,3 +177,186 @@ class TestSellParsing:
 
     def test_multiple_products(self, products):
         assert len(products) >= 10
+
+
+# ---------------------------------------------------------------------------
+# Task 1.9: Blnspec
+# ---------------------------------------------------------------------------
+
+
+class TestBlnspecParsing:
+    def test_gasoline_has_specs(self, products):
+        crg = products["regular_gasoline"]
+        assert len(crg.specs) > 0
+
+    def test_gasoline_road_octane_min(self, products):
+        crg = products["regular_gasoline"]
+        spec = crg.get_spec("road_octane")
+        assert spec is not None
+        assert spec.min_value == 87.0
+
+    def test_gasoline_rvp_index_max(self, products):
+        crg = products["regular_gasoline"]
+        spec = crg.get_spec("rvp_index")
+        assert spec is not None
+        assert spec.max_value is not None
+        assert spec.max_value > 0
+
+    def test_gasoline_sulfur_max(self, products):
+        crg = products["regular_gasoline"]
+        spec = crg.get_spec("sulfur")
+        assert spec is not None
+        assert spec.max_value is not None
+
+    def test_gasoline_benzene_max(self, products):
+        crg = products["regular_gasoline"]
+        spec = crg.get_spec("benzene")
+        assert spec is not None
+        assert spec.max_value == 2.0
+
+    def test_gasoline_aromatics_max(self, products):
+        crg = products["regular_gasoline"]
+        spec = crg.get_spec("aromatics")
+        assert spec is not None
+        assert spec.max_value == 55.0
+
+    def test_gasoline_olefins_max(self, products):
+        crg = products["regular_gasoline"]
+        spec = crg.get_spec("olefins")
+        assert spec is not None
+        assert spec.max_value == 25.0
+
+    def test_spec_names_are_eurekan(self, products):
+        """Spec names should be Eurekan property names, not PIMS tags."""
+        pims_tags = {"NDON", "XRVI", "XSUL", "XBNZ", "XARO", "XOLF"}
+        crg = products["regular_gasoline"]
+        for spec in crg.specs:
+            assert spec.spec_name not in pims_tags
+
+
+# ---------------------------------------------------------------------------
+# Task 1.9: Blnmix
+# ---------------------------------------------------------------------------
+
+
+class TestBlnmixParsing:
+    def test_gasoline_has_components(self, products):
+        crg = products["regular_gasoline"]
+        assert len(crg.allowed_components) > 0
+
+    def test_fcc_light_naphtha_in_gasoline(self, products):
+        crg = products["regular_gasoline"]
+        assert "fcc_light_naphtha" in crg.allowed_components
+
+    def test_fcc_heavy_naphtha_in_gasoline(self, products):
+        crg = products["regular_gasoline"]
+        assert "fcc_heavy_naphtha" in crg.allowed_components
+
+    def test_n_butane_in_gasoline(self, products):
+        crg = products["regular_gasoline"]
+        assert "n_butane" in crg.allowed_components
+
+    def test_reformate_in_gasoline(self, products):
+        crg = products["regular_gasoline"]
+        assert "reformate" in crg.allowed_components
+
+    def test_component_names_are_eurekan(self, products):
+        """Component names should be Eurekan stream names, not PIMS tags."""
+        pims_tags = set(PIMS_COMPONENT_MAP.keys())
+        crg = products["regular_gasoline"]
+        for comp in crg.allowed_components:
+            assert comp not in pims_tags, f"PIMS tag '{comp}' in components"
+
+
+# ---------------------------------------------------------------------------
+# Task 1.9: Blnnaph
+# ---------------------------------------------------------------------------
+
+
+class TestBlnnaphParsing:
+    def test_n_butane_properties(self, blend_properties):
+        assert "n_butane" in blend_properties
+        nc4 = blend_properties["n_butane"]
+        assert nc4.ron is not None
+        assert abs(nc4.ron - 93.8) < 0.1
+
+    def test_n_butane_mon(self, blend_properties):
+        nc4 = blend_properties["n_butane"]
+        assert nc4.mon is not None
+        assert abs(nc4.mon - 89.6) < 0.1
+
+    def test_n_butane_spg(self, blend_properties):
+        nc4 = blend_properties["n_butane"]
+        assert nc4.spg is not None
+        assert abs(nc4.spg - 0.5844) < 0.01
+
+    def test_isobutane_properties(self, blend_properties):
+        assert "isobutane" in blend_properties
+        ic4 = blend_properties["isobutane"]
+        assert ic4.ron is not None
+        assert abs(ic4.ron - 98.6) < 0.1
+
+    def test_multiple_components(self, blend_properties):
+        assert len(blend_properties) >= 5
+
+
+# ---------------------------------------------------------------------------
+# Task 1.10: Caps
+# ---------------------------------------------------------------------------
+
+
+class TestCapsParsing:
+    def test_cdu_capacity(self, units):
+        assert "cdu_1" in units
+        cdu = units["cdu_1"]
+        assert cdu.capacity == 80000.0
+
+    def test_fcc_capacity(self, units):
+        assert "fcc_1" in units
+        fcc = units["fcc_1"]
+        assert fcc.capacity == 60000.0
+
+    def test_cdu_unit_type(self, units):
+        assert units["cdu_1"].unit_type.value == "cdu"
+
+    def test_fcc_unit_type(self, units):
+        assert units["fcc_1"].unit_type.value == "fcc"
+
+    def test_fcc_min_throughput(self, units):
+        fcc = units["fcc_1"]
+        assert fcc.min_throughput == 18000.0
+
+    def test_source_is_imported(self, units):
+        for uid, uc in units.items():
+            assert uc.source.value == "imported"
+
+
+# ---------------------------------------------------------------------------
+# Task 1.10: ProcLim
+# ---------------------------------------------------------------------------
+
+
+class TestProcLimParsing:
+    def test_fcc_conversion_limits(self, units):
+        fcc = units["fcc_1"]
+        assert "fcc_conversion_min" in fcc.equipment_limits
+        assert "fcc_conversion_max" in fcc.equipment_limits
+        assert fcc.equipment_limits["fcc_conversion_min"] == 70.0
+        assert fcc.equipment_limits["fcc_conversion_max"] == 90.0
+
+    def test_fcc_riser_temp_limits(self, units):
+        fcc = units["fcc_1"]
+        assert "fcc_riser_temp_min" in fcc.equipment_limits
+        assert "fcc_riser_temp_max" in fcc.equipment_limits
+        assert fcc.equipment_limits["fcc_riser_temp_min"] == 990.0
+        assert fcc.equipment_limits["fcc_riser_temp_max"] == 1015.0
+
+    def test_fcc_regen_temp_max(self, units):
+        fcc = units["fcc_1"]
+        assert "fcc_regen_temp_max" in fcc.equipment_limits
+        assert fcc.equipment_limits["fcc_regen_temp_max"] == 1400.0
+
+    def test_cdu_limits(self, units):
+        cdu = units["cdu_1"]
+        assert "cdu1_api_max" in cdu.equipment_limits
+        assert cdu.equipment_limits["cdu1_api_max"] == 35.0

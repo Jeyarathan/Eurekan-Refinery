@@ -12,6 +12,7 @@ from typing import Optional
 
 import openpyxl
 
+from eurekan.core.config import UnitConfig
 from eurekan.core.crude import (
     CrudeAssay,
     CrudeLibrary,
@@ -19,7 +20,7 @@ from eurekan.core.crude import (
     DistillationCut,
     US_GULF_COAST_630EP,
 )
-from eurekan.core.enums import DataSource
+from eurekan.core.enums import DataSource, UnitType
 from eurekan.core.product import Product, ProductSpec
 from eurekan.parsers.schema import SchemaValidationError, SheetSchema, validate_sheet
 
@@ -130,6 +131,98 @@ SELL_SCHEMA = SheetSchema(
     sheet_name="Sell",
     required_row_tags=["CRG", "JET", "ULS"],
 )
+
+BLNSPEC_SCHEMA = SheetSchema(
+    sheet_name="Blnspec",
+    required_row_tags=["NDON", "XRVI", "XSUL"],
+    required_column_tags=["CRG"],
+)
+
+BLNMIX_SCHEMA = SheetSchema(
+    sheet_name="Blnmix",
+    required_row_tags=["LCN", "HCN", "NC4"],
+    required_column_tags=["CRG"],
+)
+
+BLNNAPH_SCHEMA = SheetSchema(
+    sheet_name="Blnnaph",
+    required_row_tags=["NC4", "LCN", "HCN"],
+)
+
+CAPS_SCHEMA = SheetSchema(
+    sheet_name="Caps",
+    required_row_tags=["CAT1", "CCCU"],
+)
+
+PROCLIM_SCHEMA = SheetSchema(
+    sheet_name="ProcLim",
+    required_row_tags=["ZCVN", "ZRTT"],
+)
+
+# Spec tag → (eurekan_property_name, bound_type)
+PIMS_SPEC_MAP: dict[str, tuple[str, str]] = {
+    "NDON": ("road_octane", "min"),
+    "XRVI": ("rvp_index", "max"),
+    "XSUL": ("sulfur", "max"),
+    "XBNZ": ("benzene", "max"),
+    "XARO": ("aromatics", "max"),
+    "XOLF": ("olefins", "max"),
+}
+
+# Component tag → Eurekan stream name
+PIMS_COMPONENT_MAP: dict[str, str] = {
+    "LCN": "fcc_light_naphtha",
+    "HCN": "fcc_heavy_naphtha",
+    "LN1": "cdu_light_naphtha",
+    "LN2": "cdu_light_naphtha_2",
+    "LN3": "cdu_light_naphtha_3",
+    "NC4": "n_butane",
+    "IC4": "isobutane",
+    "RFT": "reformate",
+    "ALK": "alkylate",
+    "DIM": "dimate",
+    "LKT": "treated_lt_coker_naphtha",
+    "ISM": "isomerate",
+    "P5S": "aru_pentanes",
+    "RAF": "raffinate",
+    "TOL": "toluene",
+    "XYL": "xylenes",
+    "C9A": "c9_aromatics",
+    "SCN": "scanfinate",
+    "HCL": "hc_light_naphtha",
+    "ETR": "ethanol_rrg",
+    "ETP": "ethanol_rpr",
+    "NC3": "propane",
+}
+
+# Blnnaph property header → CutProperties field
+PIMS_NAPH_PROP_MAP: dict[str, str] = {
+    "RON": "ron",
+    "MON": "mon",
+    "RVI": "rvp",  # RVP index
+    "SUL": "sulfur",
+    "OLF": "olefins",
+    "ARO": "aromatics",
+    "BNZ": "benzene",
+    "SPG": "spg",
+}
+
+# Caps tag → (eurekan_unit_id, UnitType, description)
+PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
+    "CAT1": ("cdu_1", UnitType.CDU, "Crude Unit #1"),
+    "CCCU": ("fcc_1", UnitType.FCC, "Cat Cracker"),
+}
+
+# ProcLim tag → (equipment_limit_key, description)
+PIMS_PROCLIM_MAP: dict[str, str] = {
+    "ZCVN": "fcc_conversion",
+    "ZRTT": "fcc_riser_temp",
+    "ZRGT": "fcc_regen_temp",
+    "ZPHT": "fcc_preheat_temp",
+    "ZAP1": "cdu1_api",
+    "ZSU1": "cdu1_sulfur",
+    "ZTA1": "cdu1_tan",
+}
 
 # Temperature ranges from the US Gulf Coast 630EP template, keyed by cut name
 _CUT_TEMPS: dict[str, tuple[Optional[float], Optional[float], str]] = {}
@@ -458,3 +551,216 @@ class GulfCoastParser:
             )
 
         return products
+
+    # ------------------------------------------------------------------
+    # Task 1.9: Parse Blnspec sheet
+    # ------------------------------------------------------------------
+
+    def parse_blnspec(self, products: dict[str, Product]) -> dict[str, Product]:
+        """Parse Blnspec sheet and add specs to Product objects."""
+        ws = self._wb["Blnspec"]
+
+        issues = validate_sheet(ws, BLNSPEC_SCHEMA)
+        if issues:
+            raise SchemaValidationError(
+                f"Blnspec sheet validation failed: {'; '.join(issues)}"
+            )
+
+        header_row_num = 3
+        col_index = self._build_col_header_index(ws, header_row_num)
+        row_index = self._build_row_tag_index(ws)
+
+        # For each product column, extract specs
+        for pims_prod_tag, prod_col in col_index.items():
+            eurekan_name = PIMS_PRODUCT_MAP.get(pims_prod_tag)
+            if eurekan_name is None or eurekan_name not in products:
+                continue
+
+            product = products[eurekan_name]
+            specs: list[ProductSpec] = []
+
+            for pims_spec_tag, (eurekan_prop, bound_type) in PIMS_SPEC_MAP.items():
+                if pims_spec_tag not in row_index:
+                    continue
+                val = self._cell_value(ws, row_index[pims_spec_tag], prod_col)
+                if val is not None:
+                    if bound_type == "min":
+                        specs.append(ProductSpec(spec_name=eurekan_prop, min_value=val))
+                    else:
+                        specs.append(ProductSpec(spec_name=eurekan_prop, max_value=val))
+
+            if specs:
+                product.specs = specs
+
+        return products
+
+    # ------------------------------------------------------------------
+    # Task 1.9: Parse Blnmix sheet
+    # ------------------------------------------------------------------
+
+    def parse_blnmix(self, products: dict[str, Product]) -> dict[str, Product]:
+        """Parse Blnmix sheet and set allowed_components on Product objects."""
+        ws = self._wb["Blnmix"]
+
+        issues = validate_sheet(ws, BLNMIX_SCHEMA)
+        if issues:
+            raise SchemaValidationError(
+                f"Blnmix sheet validation failed: {'; '.join(issues)}"
+            )
+
+        header_row_num = 3
+        col_index = self._build_col_header_index(ws, header_row_num)
+        row_index = self._build_row_tag_index(ws)
+
+        for pims_prod_tag, prod_col in col_index.items():
+            eurekan_name = PIMS_PRODUCT_MAP.get(pims_prod_tag)
+            if eurekan_name is None or eurekan_name not in products:
+                continue
+
+            product = products[eurekan_name]
+            components: list[str] = []
+
+            for pims_comp_tag, comp_row in row_index.items():
+                val = self._cell_value(ws, comp_row, prod_col)
+                if val is not None and val > 0:
+                    eurekan_comp = PIMS_COMPONENT_MAP.get(pims_comp_tag)
+                    if eurekan_comp is not None:
+                        components.append(eurekan_comp)
+
+            if components:
+                product.allowed_components = components
+
+        return products
+
+    # ------------------------------------------------------------------
+    # Task 1.9: Parse Blnnaph sheet
+    # ------------------------------------------------------------------
+
+    def parse_blnnaph(self) -> dict[str, CutProperties]:
+        """Parse Blnnaph sheet → component properties keyed by Eurekan name."""
+        ws = self._wb["Blnnaph"]
+
+        issues = validate_sheet(ws, BLNNAPH_SCHEMA)
+        if issues:
+            raise SchemaValidationError(
+                f"Blnnaph sheet validation failed: {'; '.join(issues)}"
+            )
+
+        header_row_num = 3
+        col_index = self._build_col_header_index(ws, header_row_num)
+        row_index = self._build_row_tag_index(ws)
+
+        result: dict[str, CutProperties] = {}
+
+        for pims_comp_tag, comp_row in row_index.items():
+            eurekan_name = PIMS_COMPONENT_MAP.get(pims_comp_tag)
+            if eurekan_name is None:
+                continue
+
+            props: dict[str, float] = {}
+            for pims_prop_tag, eurekan_prop in PIMS_NAPH_PROP_MAP.items():
+                prop_col = col_index.get(pims_prop_tag)
+                if prop_col is None:
+                    continue
+                val = self._cell_value(ws, comp_row, prop_col)
+                if val is not None:
+                    props[eurekan_prop] = val
+
+            result[eurekan_name] = CutProperties(**props)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Task 1.10: Parse Caps sheet
+    # ------------------------------------------------------------------
+
+    def parse_caps(self) -> dict[str, UnitConfig]:
+        """Parse Caps sheet → dict of UnitConfig objects."""
+        ws = self._wb["Caps"]
+
+        issues = validate_sheet(ws, CAPS_SCHEMA)
+        if issues:
+            raise SchemaValidationError(
+                f"Caps sheet validation failed: {'; '.join(issues)}"
+            )
+
+        header_row_num = 3
+        col_index = self._build_col_header_index(ws, header_row_num)
+        row_index = self._build_row_tag_index(ws)
+
+        min_col = col_index.get("MIN")
+        max_col = col_index.get("MAX")
+
+        units: dict[str, UnitConfig] = {}
+
+        for pims_tag, (unit_id, unit_type, desc) in PIMS_CAPS_MAP.items():
+            if pims_tag not in row_index:
+                continue
+
+            row_num = row_index[pims_tag]
+            min_val = self._cell_value(ws, row_num, min_col) if min_col else None
+            max_val = self._cell_value(ws, row_num, max_col) if max_col else None
+
+            # Caps values are in '000 BPD
+            capacity = (max_val * 1000.0) if max_val is not None else 0.0
+            min_tp = (min_val * 1000.0) if min_val is not None else 0.0
+
+            units[unit_id] = UnitConfig(
+                unit_id=unit_id,
+                unit_type=unit_type,
+                capacity=capacity,
+                min_throughput=min_tp,
+                source=DataSource.IMPORTED,
+            )
+
+        return units
+
+    # ------------------------------------------------------------------
+    # Task 1.10: Parse ProcLim sheet
+    # ------------------------------------------------------------------
+
+    def parse_proclim(
+        self, units: dict[str, UnitConfig]
+    ) -> dict[str, UnitConfig]:
+        """Parse ProcLim sheet and add equipment_limits to UnitConfig objects."""
+        ws = self._wb["ProcLim"]
+
+        issues = validate_sheet(ws, PROCLIM_SCHEMA)
+        if issues:
+            raise SchemaValidationError(
+                f"ProcLim sheet validation failed: {'; '.join(issues)}"
+            )
+
+        header_row_num = 3
+        col_index = self._build_col_header_index(ws, header_row_num)
+        row_index = self._build_row_tag_index(ws)
+
+        min_col = col_index.get("MIN")
+        max_col = col_index.get("MAX")
+
+        # FCC limits go into fcc_1
+        fcc = units.get("fcc_1")
+        cdu = units.get("cdu_1")
+
+        for pims_tag, limit_key in PIMS_PROCLIM_MAP.items():
+            if pims_tag not in row_index:
+                continue
+
+            row_num = row_index[pims_tag]
+            min_val = self._cell_value(ws, row_num, min_col) if min_col else None
+            max_val = self._cell_value(ws, row_num, max_col) if max_col else None
+
+            # Determine which unit this limit belongs to
+            target = None
+            if limit_key.startswith("fcc_") and fcc is not None:
+                target = fcc
+            elif limit_key.startswith("cdu1_") and cdu is not None:
+                target = cdu
+
+            if target is not None:
+                if min_val is not None:
+                    target.equipment_limits[f"{limit_key}_min"] = min_val
+                if max_val is not None:
+                    target.equipment_limits[f"{limit_key}_max"] = max_val
+
+        return units
