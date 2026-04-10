@@ -2,9 +2,17 @@
 
 
 def test_pyomo_and_ipopt():
+    import os
+    import sys
+
     import pyomo.environ as pyo
 
-    solver = pyo.SolverFactory("ipopt")
+    # Look for ipopt in the venv Scripts directory (not always on PATH)
+    ipopt_path = os.path.join(sys.prefix, "Scripts", "ipopt.exe")
+    if os.path.exists(ipopt_path):
+        solver = pyo.SolverFactory("ipopt", executable=ipopt_path)
+    else:
+        solver = pyo.SolverFactory("ipopt")
     assert solver.available(), "ipopt solver is not available"
 
 
