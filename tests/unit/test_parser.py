@@ -360,3 +360,54 @@ class TestProcLimParsing:
         cdu = units["cdu_1"]
         assert "cdu1_api_max" in cdu.equipment_limits
         assert cdu.equipment_limits["cdu1_api_max"] == 35.0
+
+
+# ---------------------------------------------------------------------------
+# Task 1.11: RefineryConfig assembly
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def config(parser: GulfCoastParser):
+    return parser.parse()
+
+
+class TestRefineryConfigAssembly:
+    def test_config_name(self, config):
+        assert config.name == "Gulf Coast Refinery"
+
+    def test_config_has_units(self, config):
+        assert "cdu_1" in config.units
+        assert "fcc_1" in config.units
+
+    def test_config_crude_library(self, config):
+        assert len(config.crude_library) >= 40
+
+    def test_config_products(self, config):
+        assert "regular_gasoline" in config.products
+        assert "jet_fuel" in config.products
+
+    def test_config_streams(self, config):
+        assert len(config.streams) > 0
+        assert "cdu_vgo" in config.streams
+        assert "fcc_light_naphtha" in config.streams
+
+    def test_config_cut_point_template(self, config):
+        assert config.cut_point_template.name == "us_gulf_coast_630ep"
+
+    def test_completeness_works(self, config):
+        comp = config.completeness()
+        assert comp.overall_pct > 0
+        assert comp.ready_to_optimize is True
+        assert isinstance(comp.missing, list)
+        assert isinstance(comp.using_defaults, list)
+
+    def test_products_have_specs(self, config):
+        crg = config.products["regular_gasoline"]
+        assert len(crg.specs) > 0
+        assert crg.get_spec("road_octane") is not None
+
+    def test_products_have_components(self, config):
+        crg = config.products["regular_gasoline"]
+        assert len(crg.allowed_components) > 0
+        assert "fcc_light_naphtha" in crg.allowed_components

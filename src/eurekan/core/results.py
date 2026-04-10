@@ -158,6 +158,15 @@ class SolutionNarrative(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class CDUResult(BaseModel):
+    """Results from the CDU unit model."""
+
+    total_crude: float
+    cut_volumes: dict[str, float] = {}
+    cut_properties: dict[str, CutProperties] = {}
+    vgo_feed_properties: CutProperties = CutProperties()
+
+
 class FCCResult(BaseModel):
     """Results from the FCC unit model."""
 

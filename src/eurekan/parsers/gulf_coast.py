@@ -12,7 +12,7 @@ from typing import Optional
 
 import openpyxl
 
-from eurekan.core.config import UnitConfig
+from eurekan.core.config import RefineryConfig, UnitConfig
 from eurekan.core.crude import (
     CrudeAssay,
     CrudeLibrary,
@@ -20,8 +20,9 @@ from eurekan.core.crude import (
     DistillationCut,
     US_GULF_COAST_630EP,
 )
-from eurekan.core.enums import DataSource, UnitType
+from eurekan.core.enums import DataSource, StreamDisposition, UnitType
 from eurekan.core.product import Product, ProductSpec
+from eurekan.core.stream import Stream
 from eurekan.parsers.schema import SchemaValidationError, SheetSchema, validate_sheet
 
 logger = logging.getLogger(__name__)
@@ -764,3 +765,82 @@ class GulfCoastParser:
                     target.equipment_limits[f"{limit_key}_max"] = max_val
 
         return units
+
+    # ------------------------------------------------------------------
+    # Task 1.11: Assemble RefineryConfig
+    # ------------------------------------------------------------------
+
+    def parse(self) -> RefineryConfig:
+        """Parse the entire Gulf Coast workbook → complete RefineryConfig."""
+        # 1. Assays → CrudeLibrary
+        library = self.parse_assays()
+
+        # 2. Buy → update prices/availability
+        self.parse_buy(library)
+
+        # 3. Sell → products with prices
+        products = self.parse_sell()
+
+        # 4. Blnspec → add specs to products
+        self.parse_blnspec(products)
+
+        # 5. Blnmix → add allowed_components
+        self.parse_blnmix(products)
+
+        # 6. Blnnaph → component blend properties (stored separately)
+        self.parse_blnnaph()
+
+        # 7. Caps → UnitConfig for CDU and FCC
+        units = self.parse_caps()
+
+        # 8. ProcLim → equipment limits
+        self.parse_proclim(units)
+
+        # 9. Create Stream objects for CDU cuts and FCC products
+        streams: dict[str, Stream] = {}
+
+        # CDU output streams — one per cut
+        cdu_cut_dispositions: dict[str, list[StreamDisposition]] = {
+            "lpg": [StreamDisposition.SELL],
+            "light_naphtha": [StreamDisposition.BLEND, StreamDisposition.SELL],
+            "heavy_naphtha": [StreamDisposition.BLEND, StreamDisposition.SELL],
+            "kerosene": [StreamDisposition.BLEND, StreamDisposition.SELL],
+            "diesel": [StreamDisposition.BLEND, StreamDisposition.SELL],
+            "vgo": [StreamDisposition.FCC_FEED, StreamDisposition.SELL, StreamDisposition.FUEL_OIL],
+            "vacuum_residue": [StreamDisposition.FUEL_OIL, StreamDisposition.SELL],
+        }
+        for cut_name, dispositions in cdu_cut_dispositions.items():
+            sid = f"cdu_{cut_name}"
+            streams[sid] = Stream(
+                stream_id=sid,
+                source_unit="cdu_1",
+                stream_type=cut_name,
+                possible_dispositions=dispositions,
+            )
+
+        # FCC product streams
+        fcc_streams: dict[str, list[StreamDisposition]] = {
+            "fcc_light_naphtha": [StreamDisposition.BLEND],
+            "fcc_heavy_naphtha": [StreamDisposition.BLEND, StreamDisposition.FUEL_OIL],
+            "fcc_lco": [StreamDisposition.BLEND, StreamDisposition.FUEL_OIL],
+            "fcc_slurry": [StreamDisposition.FUEL_OIL],
+            "fcc_gas": [StreamDisposition.INTERNAL],
+            "fcc_coke": [StreamDisposition.INTERNAL],
+        }
+        for stream_name, dispositions in fcc_streams.items():
+            streams[stream_name] = Stream(
+                stream_id=stream_name,
+                source_unit="fcc_1",
+                stream_type=stream_name,
+                possible_dispositions=dispositions,
+            )
+
+        # 10. Assemble and return RefineryConfig
+        return RefineryConfig(
+            name="Gulf Coast Refinery",
+            units=units,
+            crude_library=library,
+            products=products,
+            streams=streams,
+            cut_point_template=US_GULF_COAST_630EP,
+        )
