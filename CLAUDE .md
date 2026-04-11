@@ -49,10 +49,21 @@ src/eurekan/
 │   ├── gulf_coast.py # Gulf Coast Excel parser
 │   └── schema.py   # Sheet schema validation (tag-based, not position-based)
 │
-└── analysis/       # Post-solve analysis — depends on core/ and models/
-    ├── oracle.py   # Oracle gap analysis
-    ├── sensitivity.py # Price/crude sensitivity
-    └── reports.py  # Output formatting
+├── analysis/       # Post-solve analysis — depends on core/ and models/
+│   ├── oracle.py   # Oracle gap analysis
+│   ├── alternatives.py # Near-optimal solution enumeration
+│   ├── sensitivity.py # Price/crude sensitivity
+│   └── reports.py  # Output formatting
+│
+├── api/            # FastAPI layer (Stage 2) — depends on everything above
+│   ├── app.py      # FastAPI app, CORS, lifespan
+│   ├── services.py # Business logic bridge (routes → core)
+│   ├── schemas.py  # Request models
+│   └── routes/     # Endpoint handlers (optimize, config, scenarios, oracle, ai)
+│
+└── ai/             # Claude API integration (Stage 2)
+    ├── narrative.py # Three-step pipeline: facts → rules → prose
+    └── what_if.py  # Natural language → structured action parser
 ```
 
 ## Architecture Rules
@@ -426,3 +437,38 @@ Three test categories:
 - Margin within ±10% of PIMS-equivalent
 - Solve time <1 second (1 period), <5 seconds (12 periods)
 - Test coverage ≥80%
+
+---
+
+## Stage 2A: API + UI Architecture
+
+Stage 2A wraps the Stage 1 engine in a FastAPI backend + React frontend. **No changes to core/, models/, optimization/, parsers/, or analysis/.** The API is a thin layer on top.
+
+### API Architecture Rules
+
+1. **API imports FROM core, never the reverse.** Dependency: `api/` → `core/`, `models/`, `optimization/`, `analysis/`. Core modules must NEVER import from `api/`.
+2. **Pydantic models ARE API schemas.** PlanningResult, RefineryConfig, ScenarioComparison — these serialize directly to JSON via FastAPI. No separate request/response models for responses. Thin request models only where needed (OptimizeRequest, QuickOptimizeRequest).
+3. **Thin routes, fat services.** `routes/` calls `services.py` which calls core functions. Zero business logic in route handlers. If you can't do it from a Jupyter notebook, you can't do it from the API.
+4. **In-memory scenario store** (dict[str, PlanningResult]) for Stage 2A. No database. Server restart loses scenarios. PostgreSQL in Stage 2B.
+5. **Stale state tracking.** `RefineryService.is_stale` flag: set True when any input changes after last optimize, reset to False on each optimize call. Returned in API responses so the UI can show "results outdated" warning.
+6. **Run uvicorn with --workers 2** to prevent solver blocking on GET endpoints. Real job queue deferred to Stage 2B.
+
+### Frontend Architecture Rules
+
+1. **Flowsheet is the home screen.** Not a dashboard, not a table. An interactive process flow diagram built with React Flow. Every number is clickable.
+2. **No page navigation for common tasks.** Optimize, compare scenarios, check specs — all on the same page via panels and drawers. Side panel for details, never a full page change.
+3. **Color = information, applied consistently:**
+   - Green: within spec, plenty of headroom (<80% utilization)
+   - Yellow: within spec, tight margin (80-95% utilization)
+   - Red: violated or at limit (>95% utilization)
+4. **Stale state visualization.** When `isStale=true`, show amber banner "Inputs changed — click Optimize to refresh." Gray out flowsheet numbers.
+5. **Shadow price tooltips on flowsheet nodes.** If a unit's constraint is binding, the node pulses amber. Hover shows business impact: "+$45K/month if regen limit +10°F."
+6. **Confidence overlay.** Edges/nodes with DataSource.DEFAULT or low confidence render with dashed lines and "Low Confidence" badge.
+7. **Stream diff mode.** When comparing scenarios, edges show Δ volume (green=more, red=less) instead of absolute values.
+
+### AI Integration Rules
+
+1. **Three-step narrative pipeline:** Extract deterministic facts → Apply domain reasoning rules → Synthesize with Claude API. Claude ONLY gets pre-validated facts, never raw data.
+2. **Graceful degradation.** If ANTHROPIC_API_KEY not set, narrative falls back to deterministic version. What-if endpoint returns 503. Core optimization always works without AI.
+3. **Confirmation before execution.** "Ask Eurekan" ALWAYS returns a proposed action for user confirmation before running the solver. Never auto-execute ambiguous queries.
+4. **Near-optimal enumeration.** After finding optimum, check for alternatives within 2% tolerance using secondary objectives (minimize crude count, maximize robustness). Present 2-3 plans for planner to choose based on operational preferences.

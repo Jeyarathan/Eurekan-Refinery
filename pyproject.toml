@@ -23,6 +23,11 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.5",
 ]
+api = [
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+]
 notebooks = [
     "jupyterlab>=4.2",
     "matplotlib>=3.9",
