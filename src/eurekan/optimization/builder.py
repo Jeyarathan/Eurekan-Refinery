@@ -99,6 +99,10 @@ def _bi(ron: float) -> float:
 class PyomoModelBuilder:
     """Builds a complete Pyomo NLP from RefineryConfig + PlanDefinition."""
 
+    PRODUCT_NAMES: list[str] = [
+        "gasoline", "naphtha", "jet", "diesel", "fuel_oil", "lpg",
+    ]
+
     def __init__(self, config: RefineryConfig, plan: PlanDefinition) -> None:
         self.config = config
         self.plan = plan
@@ -126,6 +130,14 @@ class PyomoModelBuilder:
         self.crude_ids = list(self._yields.keys())
         self.n_periods = len(plan.periods)
 
+        # Identify product tanks: any tank whose tank_id contains a product name
+        self.product_tanks: dict[str, Any] = {}
+        for tank_id, tank in config.tanks.items():
+            for prod in self.PRODUCT_NAMES:
+                if prod in tank_id:
+                    self.product_tanks[prod] = tank
+                    break
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -142,8 +154,10 @@ class PyomoModelBuilder:
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
         self._add_blending_constraints(m)
+        self._add_inventory_constraints(m)
         self._add_demand_constraints(m)
         self._add_objective(m)
+        self._apply_unit_status(m)
 
         return m
 
@@ -154,8 +168,13 @@ class PyomoModelBuilder:
     def _add_variables(self, m: pyo.ConcreteModel) -> None:
         """Add all decision variables with explicit bounds (IPOPT requirement)."""
 
-        # Crude rates — bounded by max_rate from assay
+        # Crude rates — bounded per period by either crude_availability or
+        # the assay's overall max_rate
         def crude_bounds(_m: Any, c: str, p: int) -> tuple[float, float]:
+            period = self.plan.periods[p]
+            if c in period.crude_availability:
+                lo, hi = period.crude_availability[c]
+                return (float(lo), float(hi))
             assay = self.config.crude_library.get(c)
             max_rate = (assay.max_rate if assay and assay.max_rate else self.cdu_capacity)
             return (0.0, max_rate)
@@ -188,12 +207,33 @@ class PyomoModelBuilder:
         ]:
             setattr(m, var_name, pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0))
 
-        # Product volumes
+        # Product PRODUCTION volumes (computed from blends and dispositions)
         for var_name in [
             "gasoline_volume", "naphtha_volume", "jet_volume",
             "diesel_volume", "fuel_oil_volume", "lpg_volume",
         ]:
             setattr(m, var_name, pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0))
+
+        # Product SALES volumes — what's actually sold (= production minus
+        # net inventory build for tanked products)
+        for prod in self.PRODUCT_NAMES:
+            setattr(
+                m,
+                f"{prod}_sales",
+                pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0),
+            )
+
+        # Inventory variables — only for products that have a tank in the config
+        if self.product_tanks:
+            m.PRODUCT_TANKS = pyo.Set(initialize=list(self.product_tanks.keys()))
+
+            def inv_bounds(_m: Any, prod: str, p: int) -> tuple[float, float]:
+                tank = self.product_tanks[prod]
+                return (float(tank.minimum), float(tank.capacity))
+
+            m.inventory = pyo.Var(
+                m.PRODUCT_TANKS, m.PERIODS, bounds=inv_bounds, initialize=0.0
+            )
 
     # ------------------------------------------------------------------
     # CDU constraints
@@ -547,6 +587,64 @@ class PyomoModelBuilder:
         m.olefins_spec = pyo.Constraint(m.PERIODS, rule=olefins_rule)
 
     # ------------------------------------------------------------------
+    # Inventory constraints
+    # ------------------------------------------------------------------
+
+    def _add_inventory_constraints(self, m: pyo.ConcreteModel) -> None:
+        """Tank balance: inv[t,p] = inv[t,p-1] + production[p] - sales[p]
+
+        For products without a tank: sales == production (no inventory).
+        For products with a tank: inventory variable carries volume across periods.
+        """
+        # Sales == production for non-tanked products
+        non_tanked = [p for p in self.PRODUCT_NAMES if p not in self.product_tanks]
+
+        def sales_eq_production_rule(model: Any, p: int, prod: str) -> Any:
+            return getattr(model, f"{prod}_sales")[p] == getattr(model, f"{prod}_volume")[p]
+
+        if non_tanked:
+            m.NON_TANKED_PRODUCTS = pyo.Set(initialize=non_tanked)
+            m.sales_eq_production_con = pyo.Constraint(
+                m.PERIODS, m.NON_TANKED_PRODUCTS, rule=sales_eq_production_rule
+            )
+
+        # Tank inventory balance for tanked products
+        if not self.product_tanks:
+            return
+
+        def inventory_balance_rule(model: Any, prod: str, p: int) -> Any:
+            tank = self.product_tanks[prod]
+            production = getattr(model, f"{prod}_volume")[p]
+            sales = getattr(model, f"{prod}_sales")[p]
+            if p == 0:
+                initial = self.plan.periods[0].initial_inventory.get(
+                    prod, float(tank.current_level)
+                )
+                return model.inventory[prod, 0] == initial + production - sales
+            return (
+                model.inventory[prod, p]
+                == model.inventory[prod, p - 1] + production - sales
+            )
+
+        m.inventory_balance_con = pyo.Constraint(
+            m.PRODUCT_TANKS, m.PERIODS, rule=inventory_balance_rule
+        )
+
+    # ------------------------------------------------------------------
+    # Unit status
+    # ------------------------------------------------------------------
+
+    def _apply_unit_status(self, m: pyo.ConcreteModel) -> None:
+        """Fix unit throughputs to zero for periods where status == 'offline'."""
+        for p in range(self.n_periods):
+            period = self.plan.periods[p]
+            if period.unit_status.get("fcc_1") == "offline":
+                m.vgo_to_fcc[p].fix(0.0)
+            if period.unit_status.get("cdu_1") == "offline":
+                for c in self.crude_ids:
+                    m.crude_rate[c, p].fix(0.0)
+
+    # ------------------------------------------------------------------
     # Demand constraints
     # ------------------------------------------------------------------
 
@@ -556,12 +654,12 @@ class PyomoModelBuilder:
         def demand_min_rule(m: Any, p: int, prod: str) -> Any:
             period = self.plan.periods[p]
             min_d = period.demand_min.get(prod, 0.0)
-            return getattr(m, f"{prod}_volume")[p] >= min_d
+            return getattr(m, f"{prod}_sales")[p] >= min_d
 
         def demand_max_rule(m: Any, p: int, prod: str) -> Any:
             period = self.plan.periods[p]
             max_d = period.demand_max.get(prod, _BIG_M)
-            return getattr(m, f"{prod}_volume")[p] <= max_d
+            return getattr(m, f"{prod}_sales")[p] <= max_d
 
         m.PRODUCTS = pyo.Set(initialize=product_keys)
         m.demand_min_con = pyo.Constraint(m.PERIODS, m.PRODUCTS, rule=demand_min_rule)
@@ -579,12 +677,12 @@ class PyomoModelBuilder:
                 prices = {**_DEFAULT_PRICES, **period.product_prices}
 
                 revenue = (
-                    m.gasoline_volume[p] * prices["gasoline"]
-                    + m.naphtha_volume[p] * prices["naphtha"]
-                    + m.jet_volume[p] * prices["jet"]
-                    + m.diesel_volume[p] * prices["diesel"]
-                    + m.fuel_oil_volume[p] * prices["fuel_oil"]
-                    + m.lpg_volume[p] * prices["lpg"]
+                    m.gasoline_sales[p] * prices["gasoline"]
+                    + m.naphtha_sales[p] * prices["naphtha"]
+                    + m.jet_sales[p] * prices["jet"]
+                    + m.diesel_sales[p] * prices["diesel"]
+                    + m.fuel_oil_sales[p] * prices["fuel_oil"]
+                    + m.lpg_sales[p] * prices["lpg"]
                 )
 
                 crude_cost = sum(

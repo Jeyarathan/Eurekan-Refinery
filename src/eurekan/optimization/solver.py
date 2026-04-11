@@ -221,23 +221,38 @@ class EurekanSolver:
             gasoline = (
                 ln_avail + hn_avail + lcn_vol + hcn_vol * 0.5 + nc4_avail * 0.5 + 2000.0
             )
-            self._set_if_free(model.gasoline_volume[p], gasoline)
-            self._set_if_free(model.naphtha_volume[p], 0.0)
-            self._set_if_free(model.jet_volume[p], kero_avail)
-            self._set_if_free(model.diesel_volume[p], cut_volume("diesel") + lco_vol)
-            self._set_if_free(
-                model.fuel_oil_volume[p],
+            naphtha = 0.0
+            jet = kero_avail
+            diesel = cut_volume("diesel") + lco_vol
+            fuel_oil = (
                 max(vgo_avail - vgo_to_fcc_val, 0.0)
                 + hcn_vol * 0.5
-                + cut_volume("vacuum_residue"),
+                + cut_volume("vacuum_residue")
             )
-            self._set_if_free(
-                model.lpg_volume[p],
+            lpg = (
                 (1.0 - _NC4_FRACTION_OF_LPG) * cut_volume("lpg")
                 + nc4_avail * 0.5
                 + c3_vol
-                + c4_vol,
+                + c4_vol
             )
+
+            self._set_if_free(model.gasoline_volume[p], gasoline)
+            self._set_if_free(model.naphtha_volume[p], naphtha)
+            self._set_if_free(model.jet_volume[p], jet)
+            self._set_if_free(model.diesel_volume[p], diesel)
+            self._set_if_free(model.fuel_oil_volume[p], fuel_oil)
+            self._set_if_free(model.lpg_volume[p], lpg)
+
+            # Sales = production at the heuristic start (no inventory build)
+            self._set_if_free(model.gasoline_sales[p], gasoline)
+            self._set_if_free(model.naphtha_sales[p], naphtha)
+            self._set_if_free(model.jet_sales[p], jet)
+            self._set_if_free(model.diesel_sales[p], diesel)
+            self._set_if_free(model.fuel_oil_sales[p], fuel_oil)
+            self._set_if_free(model.lpg_sales[p], lpg)
+
+            # Inventory: leave at zero (which is the default initial value).
+            # The solver will compute optimal inventory levels.
 
     # ------------------------------------------------------------------
     # Tier 2 — LP relaxation warm-start
@@ -302,13 +317,14 @@ class EurekanSolver:
                 lp_var = getattr(lp_model, var_name)
                 getattr(model, var_name)[p].set_value(pyo.value(lp_var[p]))
 
-            # Product volumes
-            for var_name in [
-                "gasoline_volume", "naphtha_volume", "jet_volume",
-                "diesel_volume", "fuel_oil_volume", "lpg_volume",
-            ]:
-                lp_var = getattr(lp_model, var_name)
-                getattr(model, var_name)[p].set_value(pyo.value(lp_var[p]))
+            # Product volumes (also seed sales = production at warm-start)
+            for prod in ("gasoline", "naphtha", "jet", "diesel", "fuel_oil", "lpg"):
+                lp_var = getattr(lp_model, f"{prod}_volume")
+                val = pyo.value(lp_var[p])
+                getattr(model, f"{prod}_volume")[p].set_value(val)
+                sales_var = getattr(model, f"{prod}_sales", None)
+                if sales_var is not None:
+                    sales_var[p].set_value(val)
 
     def _build_lp_relaxation(
         self, config: RefineryConfig, plan: PlanDefinition

@@ -168,15 +168,16 @@ class TestVariableCount:
       1  reformate_purchased
       6  fcc intermediate volumes (lcn, hcn, lco, coke, c3, c4)
       6  product volumes (gasoline, naphtha, jet, diesel, fuel_oil, lpg)
-      = 28 + N_crudes
+      6  product sales (added in Sprint 4 — production vs sales split)
+      = 34 + N_crudes (no tanks); +N_tanks if tanks present
     """
 
     def test_variable_count_2_crudes(self):
         builder = PyomoModelBuilder(_make_config(2), _make_plan(1))
         model = builder.build()
         n_vars = sum(1 for _ in model.component_data_objects(pyo.Var))
-        # 28 auxiliary + 2 crude_rate = 30
-        assert n_vars == 30
+        # 34 auxiliary + 2 crude_rate = 36
+        assert n_vars == 36
 
     def test_variable_count_scales_with_crudes(self):
         builder_5 = PyomoModelBuilder(_make_config(5), _make_plan(1))
@@ -186,12 +187,12 @@ class TestVariableCount:
         assert n10 - n5 == 5  # +5 crudes = +5 variables
 
     def test_variable_count_gulf_coast_scale(self):
-        """At Gulf Coast scale (~35 crudes), per-period vars should be ~63."""
+        """At Gulf Coast scale (~35 crudes), per-period vars should be ~69."""
         builder = PyomoModelBuilder(_make_config(35), _make_plan(1))
         model = builder.build()
         n_vars = sum(1 for _ in model.component_data_objects(pyo.Var))
-        # 28 + 35 = 63
-        assert n_vars == 63
+        # 34 + 35 = 69
+        assert n_vars == 69
 
 
 class TestConstraintCount:
@@ -206,14 +207,15 @@ class TestConstraintCount:
       6  Product volume definitions
       6  Blending specs (octane, rvp, sulfur, benzene, aromatics, olefins)
       12 Demand (6 min + 6 max)
-      = 42 per period
+      6  Sales == production (Sprint 4, only when no product tanks)
+      = 48 per period (no tanks)
     """
 
     def test_constraint_count_per_period(self):
         builder = PyomoModelBuilder(_make_config(2), _make_plan(1))
         model = builder.build()
         n_cons = sum(1 for _ in model.component_data_objects(pyo.Constraint))
-        assert n_cons == 42
+        assert n_cons == 48
 
     def test_constraints_independent_of_crude_count(self):
         n5 = sum(
@@ -265,15 +267,15 @@ class TestModelBuildsMultiperiod:
         builder = PyomoModelBuilder(_make_config(2), _make_plan(4))
         model = builder.build()
         n_vars = sum(1 for _ in model.component_data_objects(pyo.Var))
-        # 30 vars per period × 4 periods
-        assert n_vars == 120
+        # 36 vars per period × 4 periods
+        assert n_vars == 144
 
     def test_4_period_constraint_count(self):
         builder = PyomoModelBuilder(_make_config(2), _make_plan(4))
         model = builder.build()
         n_cons = sum(1 for _ in model.component_data_objects(pyo.Constraint))
-        # 42 cons per period × 4 periods
-        assert n_cons == 168
+        # 48 cons per period × 4 periods
+        assert n_cons == 192
 
     def test_per_period_variables_distinct(self):
         """Each period has its own variable instances."""
@@ -312,6 +314,8 @@ class TestObjectiveStructure:
         for var in [
             "gasoline_volume", "naphtha_volume", "jet_volume",
             "diesel_volume", "fuel_oil_volume", "lpg_volume",
+            "gasoline_sales", "naphtha_sales", "jet_sales",
+            "diesel_sales", "fuel_oil_sales", "lpg_sales",
         ]:
             getattr(model, var)[0].fix(0.0)
 

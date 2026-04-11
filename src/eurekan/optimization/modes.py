@@ -234,13 +234,13 @@ def _build_planning_result(
                 add_node("cdu_1", FlowNodeType.UNIT, "CDU 1", cdu_throughput)
                 add_edge(f"crude_{cid}", "cdu_1", cid, rate)
 
-        # Pull product volumes
-        gasoline = _safe_value(model.gasoline_volume[p])
-        naphtha = _safe_value(model.naphtha_volume[p])
-        jet = _safe_value(model.jet_volume[p])
-        diesel = _safe_value(model.diesel_volume[p])
-        fuel_oil = _safe_value(model.fuel_oil_volume[p])
-        lpg = _safe_value(model.lpg_volume[p])
+        # Pull product SALES (revenue and demand are based on sales)
+        gasoline = _safe_value(model.gasoline_sales[p])
+        naphtha = _safe_value(model.naphtha_sales[p])
+        jet = _safe_value(model.jet_sales[p])
+        diesel = _safe_value(model.diesel_sales[p])
+        fuel_oil = _safe_value(model.fuel_oil_sales[p])
+        lpg = _safe_value(model.lpg_sales[p])
 
         product_volumes = {
             "gasoline": gasoline,
@@ -372,6 +372,14 @@ def _build_planning_result(
             )
         )
 
+    # Inventory trajectory (per tank, per period) — only present when tanks exist
+    inventory_trajectory: dict[str, list[float]] = {}
+    if hasattr(model, "PRODUCT_TANKS") and hasattr(model, "inventory"):
+        for tank_name in model.PRODUCT_TANKS:
+            inventory_trajectory[tank_name] = [
+                _safe_value(model.inventory[tank_name, p]) for p in model.PERIODS
+            ]
+
     return PlanningResult(
         scenario_id=plan.scenario_id or str(uuid.uuid4()),
         scenario_name=plan.scenario_name,
@@ -381,6 +389,7 @@ def _build_planning_result(
         total_margin=total_margin,
         solve_time_seconds=solve_result.solve_time,
         solver_status=solve_result.status,
+        inventory_trajectory=inventory_trajectory,
         material_flow=flow_graph,
         crude_valuations=crude_valuations,
     )
