@@ -587,6 +587,10 @@ class EurekanSolver:
         self._ipopt.options["max_iter"] = 3000
         self._ipopt.options["tol"] = 1e-6
 
+        # Attach a dual suffix so the diagnostician can extract shadow prices
+        if not hasattr(model, "dual"):
+            model.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+
         start = time.perf_counter()
         try:
             results = self._ipopt.solve(model, tee=False)

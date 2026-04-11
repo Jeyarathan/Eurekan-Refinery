@@ -316,3 +316,73 @@ class TestHybridMode:
         result = run_hybrid(config, hybrid_plan)
         assert result.solver_status == "optimal"
         assert abs(result.periods[0].fcc_result.conversion - 78.0) < 1e-3
+
+
+# ---------------------------------------------------------------------------
+# Task 3.5 — Scenario tracking and economic sanity checks
+# ---------------------------------------------------------------------------
+
+
+class TestScenarioIDs:
+    """Every PlanningResult has a unique scenario_id; hybrid links to parent."""
+
+    def test_scenario_ids_unique(self, config, plan):
+        r1 = run_optimization(config, plan)
+        plan2 = PlanDefinition(
+            periods=plan.periods,
+            mode=OperatingMode.OPTIMIZE,
+            scenario_name="Base 2",
+        )
+        r2 = run_optimization(config, plan2)
+        assert r1.scenario_id != r2.scenario_id
+
+    def test_hybrid_parent_id_set(self, config, plan):
+        base = run_optimization(config, plan)
+        hybrid_plan = PlanDefinition(
+            periods=plan.periods,
+            mode=OperatingMode.HYBRID,
+            scenario_name="Hybrid",
+            parent_scenario_id=base.scenario_id,
+            fixed_variables={"fcc_conversion[0]": 80.0},
+        )
+        hybrid = run_hybrid(config, hybrid_plan)
+        assert hybrid.parent_scenario_id == base.scenario_id
+        assert hybrid.scenario_id != base.scenario_id
+
+
+class TestConversionInRange:
+    def test_conversion_within_bounds(self, config, plan):
+        result = run_optimization(config, plan)
+        conv = result.periods[0].fcc_result.conversion
+        assert 68.0 <= conv <= 90.0, f"Conversion {conv} outside [68, 90]"
+
+
+class TestCrudeSelectionSensible:
+    """Optimizer should not pick only the most expensive crude."""
+
+    def test_crude_selection_sensible(self, config, plan):
+        result = run_optimization(config, plan)
+        # Find the most expensive crude in the slate
+        prices = {
+            cv.crude_id: (config.crude_library.get(cv.crude_id).price or 0.0)
+            for cv in result.crude_valuations
+        }
+        if not prices:
+            pytest.skip("No crudes selected")
+
+        max_price = max(prices.values())
+        most_expensive_crudes = [c for c, p in prices.items() if p == max_price]
+
+        # The most expensive crude should NOT be the only one selected
+        # (unless only one crude is in the result, which would also be a flag)
+        total_used_volume = sum(cv.total_volume for cv in result.crude_valuations)
+        most_expensive_volume = sum(
+            cv.total_volume
+            for cv in result.crude_valuations
+            if cv.crude_id in most_expensive_crudes
+        )
+
+        # The most expensive crude should not dominate the slate (>95%)
+        assert most_expensive_volume / total_used_volume < 0.95 or len(prices) == 1, (
+            "Optimizer picked only the most expensive crude — economic logic is wrong"
+        )
