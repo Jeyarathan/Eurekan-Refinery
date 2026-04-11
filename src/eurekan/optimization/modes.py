@@ -99,6 +99,17 @@ def run_hybrid(config: RefineryConfig, plan: PlanDefinition) -> PlanningResult:
 # ---------------------------------------------------------------------------
 
 
+def _clamp_to_bounds(var_data: object, value: float) -> float:
+    """Clamp a value to a Pyomo variable's bounds (handles solver float fuzz)."""
+    lb = getattr(var_data, "lb", None)
+    ub = getattr(var_data, "ub", None)
+    if lb is not None and value < lb:
+        return float(lb)
+    if ub is not None and value > ub:
+        return float(ub)
+    return value
+
+
 def _apply_fixed_variables(model: pyo.ConcreteModel, fixed: dict[str, float]) -> None:
     """Fix variables specified by name in the form 'var_name[index]' or 'var_name'.
 
@@ -106,13 +117,15 @@ def _apply_fixed_variables(model: pyo.ConcreteModel, fixed: dict[str, float]) ->
       'crude_rate[CRUDE_A,0]'   -> model.crude_rate['CRUDE_A', 0]
       'fcc_conversion[0]'       -> model.fcc_conversion[0]
       'fcc_conversion'          -> all instances of fcc_conversion
+
+    Values are clamped to the variable's bounds before fixing — the optimizer
+    sometimes returns values a few floating-point ticks past a bound.
     """
     for key, value in fixed.items():
         if "[" in key and key.endswith("]"):
             base, idx_str = key.split("[", 1)
             idx_str = idx_str[:-1]
             parts = [p.strip() for p in idx_str.split(",")]
-            # Try int conversion for integer-like indices
             converted: list[object] = []
             for p in parts:
                 try:
@@ -124,7 +137,8 @@ def _apply_fixed_variables(model: pyo.ConcreteModel, fixed: dict[str, float]) ->
                 continue
             try:
                 tup = converted[0] if len(converted) == 1 else tuple(converted)
-                var[tup].fix(value)
+                var_data = var[tup]
+                var_data.fix(_clamp_to_bounds(var_data, float(value)))
             except Exception:
                 continue
         else:
@@ -133,10 +147,11 @@ def _apply_fixed_variables(model: pyo.ConcreteModel, fixed: dict[str, float]) ->
                 continue
             try:
                 for idx in var:
-                    var[idx].fix(value)
+                    var_data = var[idx]
+                    var_data.fix(_clamp_to_bounds(var_data, float(value)))
             except TypeError:
                 try:
-                    var.fix(value)
+                    var.fix(_clamp_to_bounds(var, float(value)))
                 except Exception:
                     continue
 
