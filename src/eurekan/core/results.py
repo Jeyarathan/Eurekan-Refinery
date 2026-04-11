@@ -176,6 +176,16 @@ class FCCResult(BaseModel):
     equipment: list[EquipmentStatus] = []
 
 
+class SpecResult(BaseModel):
+    """Result of checking a single product spec against a blend property."""
+
+    spec_name: str
+    value: float
+    limit: float
+    margin: float
+    feasible: bool
+
+
 class BlendResult(BaseModel):
     """Results for a single blended product."""
 
