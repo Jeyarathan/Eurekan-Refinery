@@ -1,5 +1,15 @@
-import { useState } from 'react'
-import { GitBranch, LayoutDashboard, Sparkles } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import {
+  AlertCircle,
+  GitBranch,
+  LayoutDashboard,
+  Loader2,
+  Sparkles,
+} from 'lucide-react'
+
+import { quickOptimize } from './api/client'
+import { RefineryFlowsheet } from './components/flowsheet/RefineryFlowsheet'
+import { useRefineryStore } from './stores/refineryStore'
 
 type View = 'flowsheet' | 'scenarios' | 'oracle'
 
@@ -17,6 +27,33 @@ const NAV_ITEMS: NavItem[] = [
 
 function App() {
   const [activeView, setActiveView] = useState<View>('flowsheet')
+  const [error, setError] = useState<string | null>(null)
+  const activeResult = useRefineryStore((s) => s.activeResult)
+  const isOptimizing = useRefineryStore((s) => s.isOptimizing)
+  const startOptimizing = useRefineryStore((s) => s.startOptimizing)
+  const finishOptimizing = useRefineryStore((s) => s.finishOptimizing)
+
+  // Trigger an initial solve on mount
+  useEffect(() => {
+    let cancelled = false
+    async function run() {
+      startOptimizing()
+      try {
+        const result = await quickOptimize({ scenario_name: 'Initial' })
+        if (!cancelled) finishOptimizing(result)
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e))
+        }
+      }
+    }
+    run()
+    return () => {
+      cancelled = true
+    }
+    // run-once: empty deps intentional
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-800">
@@ -69,18 +106,87 @@ function App() {
           <h1 className="text-base font-semibold text-slate-900">
             Eurekan Refinery Planner
           </h1>
-          <div className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-            API connected
+          <div className="flex items-center gap-4 text-xs text-slate-500">
+            {activeResult && (
+              <span className="font-semibold text-slate-900">
+                Margin:{' '}
+                <span className="tabular-nums text-emerald-600">
+                  ${(activeResult.total_margin / 1000).toFixed(1)}k/d
+                </span>
+              </span>
+            )}
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+              API connected
+            </span>
           </div>
         </header>
 
-        <main className="flex-1 overflow-auto bg-slate-50 p-6">
-          <ViewPlaceholder view={activeView} />
+        <main className="flex-1 overflow-hidden bg-slate-50 p-6">
+          {activeView === 'flowsheet' && (
+            <FlowsheetView
+              isOptimizing={isOptimizing}
+              error={error}
+              hasResult={activeResult != null}
+            />
+          )}
+          {activeView !== 'flowsheet' && <ViewPlaceholder view={activeView} />}
         </main>
       </div>
     </div>
   )
+}
+
+function FlowsheetView({
+  isOptimizing,
+  error,
+  hasResult,
+}: {
+  isOptimizing: boolean
+  error: string | null
+  hasResult: boolean
+}) {
+  const activeResult = useRefineryStore((s) => s.activeResult)
+
+  if (error) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="max-w-md rounded-lg border border-rose-200 bg-rose-50 p-6 text-center">
+          <AlertCircle className="mx-auto h-10 w-10 text-rose-500" />
+          <h2 className="mt-3 text-lg font-semibold text-rose-900">
+            Could not reach the API
+          </h2>
+          <p className="mt-2 text-sm text-rose-700">{error}</p>
+          <p className="mt-3 text-xs text-rose-600">
+            Make sure the FastAPI backend is running on port 8000.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (isOptimizing && !hasResult) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="mx-auto h-10 w-10 animate-spin text-indigo-600" />
+          <p className="mt-3 text-sm text-slate-600">
+            Solving the refinery NLP…
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!activeResult) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-slate-500">
+        No result yet.
+      </div>
+    )
+  }
+
+  return <RefineryFlowsheet result={activeResult} />
 }
 
 function ViewPlaceholder({ view }: { view: View }) {
@@ -100,7 +206,7 @@ function ViewPlaceholder({ view }: { view: View }) {
       <h2 className="text-2xl font-semibold text-slate-900">{titles[view]}</h2>
       <p className="mt-2 text-sm text-slate-500">{subtitles[view]}</p>
       <p className="mt-6 inline-block rounded-md bg-slate-100 px-3 py-1 text-xs text-slate-500">
-        Shell only — components arrive in Sprint 6.2+
+        Coming in Sprint 6.4+
       </p>
     </div>
   )
