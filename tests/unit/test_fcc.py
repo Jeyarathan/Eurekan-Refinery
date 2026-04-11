@@ -34,8 +34,8 @@ def fcc_model(fcc_config) -> FCCModel:
 
 @pytest.fixture
 def arl_vgo() -> CutProperties:
-    """ARL-like VGO feed properties — light, easy to crack."""
-    return CutProperties(api=21.8, ccr=1.0, sulfur=1.1, nickel=0.5, vanadium=0.5)
+    """ARL-like VGO feed properties for unit tests (CCR=2.0 to exercise regen limit)."""
+    return CutProperties(api=21.8, ccr=2.0, sulfur=1.1, nickel=0.5, vanadium=0.5)
 
 
 @pytest.fixture

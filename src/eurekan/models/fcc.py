@@ -101,10 +101,11 @@ class FCCModel(BaseUnitModel):
         gasoline_raw = -0.0833 + 1.3364 * c - 0.7744 * c**2 + 0.0024 * (api - 22) - 0.0118 * (ccr - 1)
         gasoline = cal.alpha_gasoline * max(gasoline_raw, 0.0)
 
-        lco_raw = 0.3247 - 0.2593 * c + 0.0031 * (api - 22)
+        # Constant calibrated to match SCCU BASE (~16.2% LCO at 80% conv, API=22)
+        lco_raw = 0.37 - 0.2593 * c + 0.0031 * (api - 22)
         lco = cal.alpha_lco * max(lco_raw, 0.0)
 
-        coke_raw = 0.0455 + 1.5 * ccr / 100.0 + 0.001 * (c * 100.0 - 75) + 0.0002 * metals
+        coke_raw = 0.040 + 1.1 * ccr / 100.0 + 0.001 * (c * 100.0 - 75) + 0.0002 * metals
         coke = cal.alpha_coke * max(coke_raw, 0.0)
 
         # --- LCN / HCN split ---
@@ -191,7 +192,7 @@ class FCCModel(BaseUnitModel):
 
         # Coke yield for regen temp calculation
         coke = cal.alpha_coke * max(
-            0.0455 + 1.5 * ccr / 100.0 + 0.001 * (c * 100.0 - 75) + 0.0002 * metals,
+            0.040 + 1.1 * ccr / 100.0 + 0.001 * (c * 100.0 - 75) + 0.0002 * metals,
             0.0,
         )
 
@@ -256,7 +257,7 @@ class FCCModel(BaseUnitModel):
             mid = (lo + hi) / 2.0
             c = mid / 100.0
             coke = cal.alpha_coke * max(
-                0.0455 + 1.5 * ccr / 100.0 + 0.001 * (c * 100.0 - 75) + 0.0002 * metals,
+                0.040 + 1.1 * ccr / 100.0 + 0.001 * (c * 100.0 - 75) + 0.0002 * metals,
                 0.0,
             )
             regen_temp = _REGEN_BASE + _REGEN_COKE_COEFF * coke + cal.delta_regen
