@@ -1,4 +1,4 @@
-import { Component, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   GitBranch,
@@ -202,14 +202,12 @@ function FlowsheetView({
   }
 
   return (
-    <ErrorBoundary>
-      <RefineryFlowsheet
-        result={activeResult}
-        showFullDiagram={showFull}
-        highlightedNodeId={highlightedNodeId}
-        onNodeClick={setHighlightedNode}
-      />
-    </ErrorBoundary>
+    <RefineryFlowsheet
+      result={activeResult}
+      showFullDiagram={showFull}
+      highlightedNodeId={highlightedNodeId}
+      onNodeClick={setHighlightedNode}
+    />
   )
 }
 
@@ -247,36 +245,6 @@ function ViewPlaceholder({ view }: { view: View }) {
       </p>
     </div>
   )
-}
-
-// ErrorBoundary catches render crashes and shows them instead of a white screen.
-class ErrorBoundary extends Component<
-  { children: ReactNode },
-  { error: Error | null }
-> {
-  state: { error: Error | null } = { error: null }
-
-  static getDerivedStateFromError(error: Error) {
-    return { error }
-  }
-
-  render() {
-    if (this.state.error) {
-      return (
-        <div className="flex h-full items-center justify-center p-8">
-          <div className="max-w-lg rounded-lg border border-rose-200 bg-rose-50 p-6">
-            <h2 className="text-lg font-semibold text-rose-900">
-              Render error
-            </h2>
-            <pre className="mt-2 overflow-auto whitespace-pre-wrap text-xs text-rose-700">
-              {this.state.error.message}
-            </pre>
-          </div>
-        </div>
-      )
-    }
-    return this.props.children
-  }
 }
 
 export default App

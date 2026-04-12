@@ -9,10 +9,10 @@ const BASE = '/api'
 
 interface AltPlan {
   name: string
-  description: string
-  axis: string
+  description?: string
+  axis?: string
   margin: number
-  margin_pct: number
+  margin_pct?: number
   scenario_id: string
 }
 
@@ -164,7 +164,7 @@ export function AlternativesPanel() {
               {plans.map((p) => (
                 <th key={p.scenario_id} className="px-2 py-2 text-right font-medium text-slate-700">
                   <div>{p.name}</div>
-                  <div className="font-normal text-[9px] text-slate-400">{p.description.split('.')[0]}</div>
+                  <div className="font-normal text-[9px] text-slate-400">{(p.description ?? p.name).split('.')[0]}</div>
                 </th>
               ))}
             </tr>
@@ -185,7 +185,7 @@ export function AlternativesPanel() {
               <td className="sticky left-0 z-10 bg-white px-3 py-1 text-slate-600">% of Optimal</td>
               <td className="px-2 py-1 text-right tabular-nums text-slate-700">100%</td>
               {plans.map((p) => (
-                <td key={p.scenario_id} className="px-2 py-1 text-right tabular-nums text-slate-600">{p.margin_pct.toFixed(1)}%</td>
+                <td key={p.scenario_id} className="px-2 py-1 text-right tabular-nums text-slate-600">{(p.margin_pct ?? ((activeResult?.total_margin ?? 1) > 0 ? p.margin / (activeResult?.total_margin ?? 1) * 100 : 0)).toFixed(1)}%</td>
               ))}
             </tr>
 
