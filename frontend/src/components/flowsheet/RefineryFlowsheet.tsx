@@ -15,9 +15,10 @@ import { applyDagreLayout } from './layoutUtils'
 import { PurchaseNode, type PurchaseNodeData } from './PurchaseNode'
 import { ProductNode, type ProductNodeData } from './ProductNode'
 import { StreamEdge, type StreamEdgeData } from './StreamEdge'
+import { SwimLane } from './SwimLane'
 import { UnitNode, type UnitNodeData } from './UnitNode'
 
-const NODE_TYPES = { purchase: PurchaseNode, unit: UnitNode, product: ProductNode }
+const NODE_TYPES = { purchase: PurchaseNode, unit: UnitNode, product: ProductNode, swimlane: SwimLane }
 const EDGE_TYPES = { stream: StreamEdge }
 
 const AREA_COLORS: Record<string, string> = {
@@ -112,7 +113,7 @@ export function RefineryFlowsheet({
         id: fn.node_id,
         type: nodeType,
         position: { x: 0, y: 0 }, // dagre will position
-        data,
+        data: { ...data, originalNodeType: fn.node_type },
         draggable: true,
       }
     })
