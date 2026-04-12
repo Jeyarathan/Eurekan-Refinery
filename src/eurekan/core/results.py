@@ -176,6 +176,18 @@ class FCCResult(BaseModel):
     equipment: list[EquipmentStatus] = []
 
 
+class ReformerResult(BaseModel):
+    """Results from the reformer unit model."""
+
+    reformate_volume: float
+    reformate_ron: float
+    hydrogen_production: float
+    lpg_production: float
+    fuel_gas_production: float
+    severity: float
+    equipment: list[EquipmentStatus] = []
+
+
 class SpecResult(BaseModel):
     """Result of checking a single product spec against a blend property."""
 
