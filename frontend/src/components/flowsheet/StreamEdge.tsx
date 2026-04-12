@@ -25,7 +25,8 @@ export function StreamEdge({
   const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX, sourceY, targetX, targetY,
     sourcePosition, targetPosition,
-    borderRadius: 12,
+    borderRadius: 4,    // near-orthogonal 90-degree turns
+    offset: 20,         // distance before first turn
   })
 
   const { volume, maxVolume, dimmed, streamName } = (data as StreamEdgeData) ?? {

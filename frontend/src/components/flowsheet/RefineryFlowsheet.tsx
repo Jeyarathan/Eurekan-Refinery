@@ -12,13 +12,14 @@ import '@xyflow/react/dist/style.css'
 
 import type { FlowEdge, PlanningResult } from '../../types'
 import { applyPfdLayout } from './layoutUtils'
+import { CduNode } from './CduNode'
 import { PurchaseNode, type PurchaseNodeData } from './PurchaseNode'
 import { ProductNode, type ProductNodeData } from './ProductNode'
 import { StreamEdge, type StreamEdgeData } from './StreamEdge'
 import { SwimLane } from './SwimLane'
 import { UnitNode, type UnitNodeData } from './UnitNode'
 
-const NODE_TYPES = { purchase: PurchaseNode, unit: UnitNode, product: ProductNode, swimlane: SwimLane }
+const NODE_TYPES = { purchase: PurchaseNode, cdu: CduNode, unit: UnitNode, product: ProductNode, swimlane: SwimLane }
 const EDGE_TYPES = { stream: StreamEdge }
 
 const AREA_COLORS: Record<string, string> = {

@@ -1,134 +1,155 @@
 /**
- * Refinery PFD layout engine — boiling-point hierarchy.
+ * Refinery PFD layout — boiling-point hierarchy with multi-port CDU.
  *
- * Top = light (LPG), bottom = heavy (fuel oil).
- * Left-to-right flow within each horizontal swim lane.
- * CDU is a hub on the left, products aligned on the right.
+ * All positions are deterministic. No dagre — the refinery topology
+ * is fixed, so we know exactly where each node goes.
  */
 
 import type { Edge, Node } from '@xyflow/react'
 
-// --- Column X positions (left → right) ---
+// ---------- X columns (generous spacing) ----------
 const X_CRUDE = 0
-const X_CDU = 160
-const X_PROCESS = 360    // process units within swim lanes
-const X_PROCESS2 = 520   // second unit in a lane (reformer after NHT)
-const X_BLEND = 680
-const X_PRODUCT = 840
+const X_CDU = 200       // CDU hub
+const X_LANE_START = 420 // first process unit in any lane
+const X_LANE_MID = 580   // second unit in a lane
+const X_LANE_END = 740   // third unit (e.g. reformer after NHT)
+const X_BLEND = 940      // gasoline blender
+const X_PRODUCT = 1140   // product sale nodes
 
-// --- Swim lane Y positions (top = light, bottom = heavy) ---
-const LANE_GAP = 120
-const Y_LIGHTENDS = 0
-const Y_NAPHTHA = LANE_GAP
-const Y_FCC = LANE_GAP * 2
-const Y_DISTILLATE = LANE_GAP * 3
-const Y_BOTTOMS = LANE_GAP * 4
+// ---------- Y swim lanes (top = light, bottom = heavy) ----------
+const Y_LPG = 0
+const Y_NAPHTHA = 140
+const Y_FCC = 320
+const Y_DISTILLATE = 500
+const Y_BOTTOMS = 660
 
-// Product Y ordering by boiling point (must match swim lanes)
+// Product Y by boiling point (aligned with source lane)
 const PRODUCT_Y: Record<string, number> = {
-  sale_lpg: Y_LIGHTENDS,
-  sale_gasoline: Y_NAPHTHA,
-  sale_naphtha: Y_NAPHTHA + 50,
-  sale_jet: Y_DISTILLATE - 30,
-  sale_diesel: Y_DISTILLATE + 30,
+  sale_lpg: Y_LPG,
+  sale_gasoline: Y_NAPHTHA + 20,
+  sale_naphtha: Y_NAPHTHA + 80,
+  sale_jet: Y_DISTILLATE - 40,
+  sale_diesel: Y_DISTILLATE + 40,
   sale_fuel_oil: Y_BOTTOMS,
 }
 
-// Swim lane definitions for background rectangles
+// CDU output port IDs that edges should reference
+const CDU_PORT_FOR_TARGET: Record<string, string> = {
+  sale_lpg: 'lpg',
+  sale_naphtha: 'ln',
+  sale_jet: 'kero',
+  sale_diesel: 'diesel',
+  sale_fuel_oil: 'resid',
+  blend_gasoline: 'ln',     // LN+HN to blend
+  fcc_1: 'vgo',
+  reformer_1: 'hn',
+  splitter_1: 'hn',
+  nht_1: 'hn',
+  kero_ht_1: 'kero',
+  diesel_ht_1: 'diesel',
+}
+
+// Swim lane background defs
 export interface SwimLaneDef {
-  id: string
-  label: string
-  color: string
-  y: number
-  height: number
+  id: string; label: string; color: string; y: number; height: number
 }
 
 export const SWIM_LANE_DEFS: SwimLaneDef[] = [
-  { id: 'lane_naphtha', label: 'Naphtha Processing', color: '#e3f2fd', y: Y_NAPHTHA - 30, height: 90 },
-  { id: 'lane_fcc', label: 'FCC Complex', color: '#f3e5f5', y: Y_FCC - 30, height: 90 },
-  { id: 'lane_distillate', label: 'Distillate', color: '#e8f5e9', y: Y_DISTILLATE - 30, height: 90 },
+  { id: 'lane_naphtha', label: 'Naphtha Processing', color: '#e3f2fd', y: Y_NAPHTHA - 35, height: 110 },
+  { id: 'lane_fcc', label: 'FCC Complex', color: '#f3e5f5', y: Y_FCC - 35, height: 110 },
+  { id: 'lane_distillate', label: 'Distillate', color: '#e8f5e9', y: Y_DISTILLATE - 55, height: 130 },
 ]
 
-// --- Node positioning by ID ---
-function positionNode(nodeId: string, nodeType: string, purchaseIndex: number, purchaseCount: number): { x: number; y: number } {
-  // Crude purchases: stacked vertically on far left, centred around CDU
-  if (nodeType === 'purchase' && !nodeId.includes('reformate')) {
-    const totalH = purchaseCount * 60
-    const startY = (Y_FCC - totalH / 2) + purchaseIndex * 60
-    return { x: X_CRUDE, y: startY }
+// ---------- Node position by ID ----------
+function nodePosition(id: string, nodeType: string, pIdx: number, pCount: number): { x: number; y: number } {
+  // Purchases: stacked on far left, centred around FCC lane
+  if (nodeType === 'purchase' && !id.includes('reformate')) {
+    const totalH = pCount * 56
+    return { x: X_CRUDE, y: Y_FCC - totalH / 2 + pIdx * 56 }
   }
+  if (id === 'purchase_reformate') return { x: X_LANE_START, y: Y_NAPHTHA + 60 }
 
-  // Purchased reformate: near naphtha lane
-  if (nodeId === 'purchase_reformate') return { x: X_PROCESS, y: Y_NAPHTHA + 50 }
+  // CDU
+  if (id === 'cdu_1') return { x: X_CDU, y: Y_FCC - 60 } // tall node centred
 
-  // CDU hub: centered vertically spanning all lanes
-  if (nodeId === 'cdu_1') return { x: X_CDU, y: Y_FCC }
+  // Naphtha lane
+  if (id.includes('splitter')) return { x: X_LANE_START, y: Y_NAPHTHA }
+  if (id.includes('nht')) return { x: X_LANE_MID, y: Y_NAPHTHA }
+  if (id === 'reformer_1') return { x: X_LANE_END, y: Y_NAPHTHA }
 
-  // Naphtha lane units
-  if (nodeId.includes('splitter')) return { x: X_PROCESS, y: Y_NAPHTHA }
-  if (nodeId.includes('nht')) return { x: X_PROCESS + 80, y: Y_NAPHTHA }
-  if (nodeId === 'reformer_1') return { x: X_PROCESS2, y: Y_NAPHTHA }
+  // FCC lane
+  if (id.includes('go_ht')) return { x: X_LANE_START, y: Y_FCC }
+  if (id === 'fcc_1') return { x: X_LANE_MID, y: Y_FCC }
+  if (id.includes('scanfin')) return { x: X_LANE_END, y: Y_FCC }
+  if (id.includes('alky')) return { x: X_LANE_END, y: Y_FCC - 60 }
 
-  // FCC lane units
-  if (nodeId.includes('go_ht')) return { x: X_PROCESS, y: Y_FCC }
-  if (nodeId === 'fcc_1') return { x: X_PROCESS + 80, y: Y_FCC }
-  if (nodeId.includes('scanfin')) return { x: X_PROCESS2, y: Y_FCC }
-  if (nodeId.includes('alky')) return { x: X_PROCESS2 + 80, y: Y_FCC - 40 }
+  // Distillate lane
+  if (id.includes('kero_ht')) return { x: X_LANE_START, y: Y_DISTILLATE - 30 }
+  if (id.includes('diesel_ht')) return { x: X_LANE_START, y: Y_DISTILLATE + 30 }
 
-  // Distillate lane units
-  if (nodeId.includes('kero_ht')) return { x: X_PROCESS, y: Y_DISTILLATE - 20 }
-  if (nodeId.includes('diesel_ht')) return { x: X_PROCESS, y: Y_DISTILLATE + 30 }
+  // Blender
+  if (id.includes('blend')) return { x: X_BLEND, y: (Y_NAPHTHA + Y_FCC) / 2 }
 
-  // Gasoline blender: right of process, between naphtha and FCC lanes
-  if (nodeId.includes('blend')) return { x: X_BLEND, y: (Y_NAPHTHA + Y_FCC) / 2 }
+  // Products
+  if (nodeType === 'sale_point') return { x: X_PRODUCT, y: PRODUCT_Y[id] ?? Y_FCC }
 
-  // Product/sale nodes: ordered by boiling point on far right
-  if (nodeType === 'sale_point') {
-    const y = PRODUCT_Y[nodeId] ?? Y_FCC
-    return { x: X_PRODUCT, y }
-  }
-
-  // Fallback
-  return { x: X_PROCESS, y: Y_BOTTOMS }
+  return { x: X_LANE_START, y: Y_BOTTOMS }
 }
 
-export function applyPfdLayout(
-  nodes: Node[],
-  edges: Edge[],
-): { nodes: Node[]; edges: Edge[] } {
-  // Count purchases for vertical centering
+// ---------- Public API ----------
+export function applyPfdLayout(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
   const purchases = nodes.filter(
     (n) => (n.data as Record<string, unknown>)?.nodeCategory === 'purchase'
       && !n.id.includes('reformate'),
   )
-  let purchaseIdx = 0
+  let pIdx = 0
 
   const positioned = nodes.map((node) => {
-    const cat = (node.data as Record<string, unknown>)?.nodeCategory as string
-    const origType = (node.data as Record<string, unknown>)?.originalNodeType as string ?? cat
+    const d = node.data as Record<string, unknown>
+    const cat = d?.nodeCategory as string
+    const origType = (d?.originalNodeType as string) ?? cat
     const isPurchase = cat === 'purchase' && !node.id.includes('reformate')
 
-    const pos = positionNode(
-      node.id, origType,
-      isPurchase ? purchaseIdx : 0,
-      purchases.length,
-    )
-    if (isPurchase) purchaseIdx++
+    const pos = nodePosition(node.id, origType, isPurchase ? pIdx : 0, purchases.length)
+    if (isPurchase) pIdx++
 
-    return { ...node, position: pos }
+    // CDU gets its own node type
+    const type = node.id === 'cdu_1' ? 'cdu' : node.type
+
+    return { ...node, type, position: pos, zIndex: type === 'swimlane' ? -1 : 10 }
   })
 
-  // Generate swim lane background nodes
+  // Assign CDU source handles to edges originating from CDU
+  const routedEdges = edges.map((edge) => {
+    if (edge.source === 'cdu_1') {
+      const port = CDU_PORT_FOR_TARGET[edge.target]
+      // Also check display_name for keyword matching
+      const sn = ((edge.data as Record<string, unknown>)?.streamName as string ?? '').toLowerCase()
+      const guessedPort =
+        port
+        ?? (sn.includes('vgo') ? 'vgo'
+          : sn.includes('naphtha') || sn.includes('ln') || sn.includes('hn') ? 'hn'
+          : sn.includes('kero') ? 'kero'
+          : sn.includes('diesel') ? 'diesel'
+          : sn.includes('lpg') ? 'lpg'
+          : sn.includes('vr') || sn.includes('resid') || sn.includes('bypass') ? 'resid'
+          : undefined)
+      return { ...edge, sourceHandle: guessedPort }
+    }
+    return edge
+  })
+
+  // Swim lane backgrounds
   const laneNodes: Node[] = SWIM_LANE_DEFS.map((lane) => ({
     id: lane.id,
     type: 'swimlane',
-    position: { x: X_PROCESS - 20, y: lane.y },
+    position: { x: X_LANE_START - 30, y: lane.y },
     data: { label: lane.label, color: lane.color },
-    style: { width: X_BLEND - X_PROCESS + 60, height: lane.height },
+    style: { width: X_BLEND - X_LANE_START + 80, height: lane.height },
     draggable: false,
     selectable: false,
     zIndex: -1,
   }))
 
-  return { nodes: [...laneNodes, ...positioned], edges }
+  return { nodes: [...laneNodes, ...positioned], edges: routedEdges }
 }
