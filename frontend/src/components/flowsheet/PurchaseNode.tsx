@@ -4,42 +4,24 @@ import { Droplet } from 'lucide-react'
 export interface PurchaseNodeData extends Record<string, unknown> {
   label: string
   volume: number
-  pricePerBbl?: number | null
   dimmed?: boolean
+  nodeCategory?: string
 }
 
-const fmt = (n: number) =>
-  n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n.toFixed(0)
+const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(0)}K` : n.toFixed(0))
 
 export function PurchaseNode({ data }: NodeProps) {
-  const { label, volume, pricePerBbl, dimmed } = data as PurchaseNodeData
+  const { label, volume, dimmed } = data as PurchaseNodeData
   return (
-    <div className={`min-w-[150px] rounded-lg border bg-white px-4 py-3 shadow-sm ${dimmed ? 'border-slate-100 opacity-30' : 'border-slate-200'}`}>
-      <div className="flex items-center gap-2">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
-          <Droplet size={14} strokeWidth={2.5} />
-        </div>
-        <div>
-          <div className="text-sm font-semibold text-slate-900">{label}</div>
-          <div className="text-[10px] uppercase tracking-wide text-slate-500">
-            Crude purchase
-          </div>
-        </div>
+    <div className={`flex flex-col items-center gap-0.5 ${dimmed ? 'opacity-30' : ''}`}>
+      <div className="flex h-7 w-7 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+        <Droplet size={12} strokeWidth={2.5} />
       </div>
-      <div className="mt-2 flex items-baseline gap-1 text-slate-700">
-        <span className="text-base font-semibold tabular-nums">
-          {fmt(volume)}
-        </span>
-        <span className="text-[10px] text-slate-500">bbl/d</span>
-      </div>
-      {pricePerBbl != null && (
-        <div className="text-[10px] text-slate-500">${pricePerBbl.toFixed(2)}/bbl</div>
+      <div className="text-[9px] font-semibold text-slate-800 leading-tight">{label}</div>
+      {volume > 1 && (
+        <div className="text-[8px] tabular-nums text-slate-500">{fmt(volume)}</div>
       )}
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!h-2 !w-2 !border-slate-300 !bg-slate-300"
-      />
+      <Handle type="source" position={Position.Right} className="!h-1.5 !w-1.5 !border-0 !bg-slate-300" />
     </div>
   )
 }

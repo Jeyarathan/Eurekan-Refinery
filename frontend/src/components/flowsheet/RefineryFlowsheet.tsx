@@ -1,52 +1,34 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import {
   Background,
   Controls,
   MarkerType,
+  MiniMap,
   ReactFlow,
   type Edge,
   type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
-import type {
-  ConstraintDiagnostic,
-  FlowEdge,
-  FlowNode,
-  PlanningResult,
-} from '../../types'
+import type { FlowEdge, PlanningResult } from '../../types'
+import { applyDagreLayout } from './layoutUtils'
 import { PurchaseNode, type PurchaseNodeData } from './PurchaseNode'
 import { ProductNode, type ProductNodeData } from './ProductNode'
 import { StreamEdge, type StreamEdgeData } from './StreamEdge'
 import { UnitNode, type UnitNodeData } from './UnitNode'
 
-const NODE_TYPES = {
-  purchase: PurchaseNode,
-  unit: UnitNode,
-  product: ProductNode,
+const NODE_TYPES = { purchase: PurchaseNode, unit: UnitNode, product: ProductNode }
+const EDGE_TYPES = { stream: StreamEdge }
+
+const AREA_COLORS: Record<string, string> = {
+  unit: '#90caf9',        // blue for naphtha/process units
+  fcc: '#ce93d8',         // purple for FCC complex
+  reformer: '#90caf9',    // blue for naphtha processing
+  blend_header: '#b39ddb',
 }
 
-const EDGE_TYPES = {
-  stream: StreamEdge,
-}
-
-// Layout constants
-const COLUMN_X: Record<string, number> = {
-  purchase: 0,
-  unit: 350,
-  blend_header: 700,
-  sale_point: 1000,
-  tank: 1000,
-}
-const ROW_GAP = 110
-
-const PRODUCT_PRICE_DEFAULTS: Record<string, number> = {
-  gasoline: 95,
-  diesel: 100,
-  jet: 100,
-  naphtha: 60,
-  fuel_oil: 70,
-  lpg: 50,
+const PRODUCT_PRICES: Record<string, number> = {
+  gasoline: 95, diesel: 100, jet: 100, naphtha: 60, fuel_oil: 55, lpg: 50,
 }
 
 interface Props {
@@ -56,241 +38,146 @@ interface Props {
   onNodeClick?: (nodeId: string | null) => void
 }
 
-interface BuiltGraph {
-  nodes: Node[]
-  edges: Edge[]
-}
+export function RefineryFlowsheet({
+  result, showFullDiagram = false, highlightedNodeId = null, onNodeClick,
+}: Props) {
+  const { nodes, edges } = useMemo(() => {
+    const flow = result.material_flow
+    const period = result.periods[0]
+    const fcc = period?.fcc_result ?? null
 
-function buildGraph(
-  result: PlanningResult,
-  diagnosticsByUnit: Map<string, ConstraintDiagnostic | undefined>,
-  showFullDiagram = false,
-  highlightedNodeId: string | null = null,
-): BuiltGraph {
-  const flow = result.material_flow
-  const period = result.periods[0]
-  const fcc = period?.fcc_result ?? null
+    // Filter nodes
+    const significant = showFullDiagram
+      ? flow.nodes
+      : flow.nodes.filter((n) => n.node_type === 'purchase' ? n.throughput > 1 : true)
 
-  // In Live Flow mode, drop zero-throughput nodes.
-  // In Full Diagram mode, keep everything.
-  const significantNodes = showFullDiagram
-    ? flow.nodes
-    : flow.nodes.filter((n) => {
-        if (n.node_type === 'purchase') return n.throughput > 1
-        return true
-      })
+    // Build React Flow nodes
+    const rfNodes: Node[] = significant.map((fn) => {
+      const nodeType = fn.node_type === 'purchase' ? 'purchase'
+        : fn.node_type === 'unit' ? 'unit' : 'product'
 
-  // Group by column to compute y positions
-  const byColumn = new Map<string, FlowNode[]>()
-  significantNodes.forEach((n) => {
-    const arr = byColumn.get(n.node_type) ?? []
-    arr.push(n)
-    byColumn.set(n.node_type, arr)
-  })
+      let data: PurchaseNodeData | UnitNodeData | ProductNodeData
 
-  // Compute the largest column height for vertical centering
-  const maxColumnLength = Math.max(
-    ...Array.from(byColumn.values()).map((c) => c.length),
-    1,
-  )
-  const totalHeight = maxColumnLength * ROW_GAP
-
-  const nodes: Node[] = []
-
-  byColumn.forEach((columnNodes, type) => {
-    const columnHeight = columnNodes.length * ROW_GAP
-    const yOffset = (totalHeight - columnHeight) / 2 + 30
-    columnNodes.forEach((flowNode, idx) => {
-      const x = COLUMN_X[type] ?? 0
-      const y = yOffset + idx * ROW_GAP
-
-      let nodeType: 'purchase' | 'unit' | 'product' = 'product'
-      let data:
-        | PurchaseNodeData
-        | UnitNodeData
-        | ProductNodeData
-
-      const isDimmed = showFullDiagram && flowNode.throughput <= 1
-
-      if (type === 'purchase') {
-        nodeType = 'purchase'
-        const label = flowNode.display_name || flowNode.node_id.replace(/^crude_/, '')
+      if (fn.node_type === 'purchase') {
         data = {
-          label,
-          volume: flowNode.throughput,
-          dimmed: isDimmed,
+          label: fn.display_name || fn.node_id.replace(/^(crude_|purchase_)/, ''),
+          volume: fn.throughput,
+          dimmed: showFullDiagram && fn.throughput <= 1,
+          nodeCategory: 'purchase',
         }
-      } else if (type === 'unit') {
-        nodeType = 'unit'
-        const isCDU = flowNode.node_id === 'cdu_1'
-        const isFCC = flowNode.node_id === 'fcc_1'
-        const diag = diagnosticsByUnit.get(flowNode.node_id)
-
-        // CDU: throughput from crude slate sum; capacity from config
+      } else if (fn.node_type === 'unit') {
+        const isCDU = fn.node_id === 'cdu_1'
+        const isFCC = fn.node_id === 'fcc_1'
+        const isReformer = fn.node_id === 'reformer_1'
         const cduThroughput = isCDU
           ? Object.values(period?.crude_slate ?? {}).reduce((a, b) => a + b, 0)
-          : flowNode.throughput
-
-        // FCC: get regen temp from equipment status
-        const regenEquip = fcc?.equipment?.find(
-          (e) => e.name === 'regen_temp',
-        )
-
+          : fn.throughput
+        const regenEquip = fcc?.equipment?.find((e) => e.name === 'regen_temp')
         data = {
-          label: flowNode.display_name,
-          unitId: flowNode.node_id,
-          throughput: isCDU ? cduThroughput : flowNode.throughput,
-          capacity: isCDU ? 80000 : isFCC ? 60000 : undefined,
-          // FCC-only fields: conversion and regen temp utilization
+          label: fn.display_name,
+          unitId: fn.node_id,
+          throughput: isCDU ? cduThroughput : fn.throughput,
+          capacity: isCDU ? 80000 : isFCC ? 60000 : isReformer ? 35000 : undefined,
           conversion: isFCC ? (fcc?.conversion ?? null) : null,
-          regenUtilPct: isFCC && regenEquip
-            ? regenEquip.utilization_pct
-            : null,
-          binding: !!diag?.binding,
-          bindingHint: diag?.relaxation_suggestion ?? undefined,
+          regenUtilPct: isFCC && regenEquip ? regenEquip.utilization_pct : null,
+          binding: false,
+          nodeCategory: 'unit',
+          areaColor: isFCC ? AREA_COLORS.fcc : isReformer ? AREA_COLORS.reformer : AREA_COLORS.unit,
         }
-      } else if (type === 'blend_header') {
-        nodeType = 'product'
+      } else if (fn.node_type === 'blend_header') {
         data = {
-          label: flowNode.display_name,
-          volume: flowNode.throughput,
+          label: fn.display_name,
+          volume: fn.throughput,
           isBlender: true,
-          pricePerBbl: PRODUCT_PRICE_DEFAULTS.gasoline,
-          specBadges: buildGasolineBadges(result),
-        }
-      } else if (type === 'sale_point') {
-        nodeType = 'product'
-        const productKey = flowNode.node_id.replace(/^sale_/, '')
-        const price = PRODUCT_PRICE_DEFAULTS[productKey] ?? null
-        data = {
-          label: flowNode.display_name,
-          volume: flowNode.throughput,
-          pricePerBbl: price,
-          isBlender: false,
+          pricePerBbl: PRODUCT_PRICES.gasoline,
+          nodeCategory: 'blend',
+          specBadges: [
+            { name: 'RON', status: 'pass' as const },
+            { name: 'RVP', status: 'pass' as const },
+            { name: 'S', status: 'pass' as const },
+          ],
         }
       } else {
-        // Unknown type — render as product card
-        nodeType = 'product'
+        const prodKey = fn.node_id.replace(/^sale_/, '')
         data = {
-          label: flowNode.display_name,
-          volume: flowNode.throughput,
+          label: fn.display_name,
+          volume: fn.throughput,
+          pricePerBbl: PRODUCT_PRICES[prodKey] ?? null,
+          isBlender: false,
+          nodeCategory: 'product',
         }
       }
 
-      nodes.push({
-        id: flowNode.node_id,
+      return {
+        id: fn.node_id,
         type: nodeType,
-        position: { x, y },
+        position: { x: 0, y: 0 }, // dagre will position
         data,
         draggable: true,
-      })
+      }
     })
-  })
 
-  // Edges — width proportional to volume across the whole graph
-  const maxVolume = Math.max(...flow.edges.map((e) => e.volume), 1)
-  const visibleNodeIds = new Set(nodes.map((n) => n.id))
+    // Build edges with stream tracing
+    const maxVol = Math.max(...flow.edges.map((e) => e.volume), 1)
+    const visibleIds = new Set(rfNodes.map((n) => n.id))
 
-  // Build set of edges connected to the highlighted node (for stream tracing)
-  const connectedEdgeIds = new Set<string>()
-  if (highlightedNodeId) {
-    // Walk edges: any edge touching the highlighted node, plus edges
-    // reachable downstream or upstream through intermediate nodes
-    const touched = new Set<string>([highlightedNodeId])
-    // Forward pass: source → target
-    let changed = true
-    while (changed) {
-      changed = false
-      for (const e of flow.edges) {
-        if (touched.has(e.source_node) && !touched.has(e.dest_node)) {
-          touched.add(e.dest_node)
-          connectedEdgeIds.add(e.edge_id)
-          changed = true
+    // Stream tracing: forward walk from highlighted node
+    const connected = new Set<string>()
+    if (highlightedNodeId) {
+      const touched = new Set([highlightedNodeId])
+      let changed = true
+      while (changed) {
+        changed = false
+        for (const e of flow.edges) {
+          if (touched.has(e.source_node) && !touched.has(e.dest_node)) {
+            touched.add(e.dest_node)
+            connected.add(e.edge_id)
+            changed = true
+          }
         }
       }
-    }
-    // Also include edges directly touching the highlighted node
-    for (const e of flow.edges) {
-      if (e.source_node === highlightedNodeId || e.dest_node === highlightedNodeId) {
-        connectedEdgeIds.add(e.edge_id)
+      for (const e of flow.edges) {
+        if (e.source_node === highlightedNodeId || e.dest_node === highlightedNodeId)
+          connected.add(e.edge_id)
       }
     }
-  }
 
-  const edges: Edge[] = flow.edges
-    .filter(
-      (e: FlowEdge) =>
-        visibleNodeIds.has(e.source_node) && visibleNodeIds.has(e.dest_node),
-    )
-    .map((flowEdge) => {
-      const isTraceDimmed =
-        highlightedNodeId != null && !connectedEdgeIds.has(flowEdge.edge_id)
-      const isDimmed =
-        isTraceDimmed || (showFullDiagram && flowEdge.volume <= 1)
-      return {
-        id: flowEdge.edge_id,
-        source: flowEdge.source_node,
-        target: flowEdge.dest_node,
-        type: 'stream',
-        data: {
-          volume: flowEdge.volume,
-          maxVolume,
-          economicValue: flowEdge.economic_value,
-          dimmed: isDimmed,
-        } satisfies StreamEdgeData,
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: isDimmed
-            ? 'rgba(148, 163, 184, 0.4)'
-            : 'rgba(79, 70, 229, 0.6)',
-        },
-      }
-    })
+    const rfEdges: Edge[] = flow.edges
+      .filter((e: FlowEdge) => visibleIds.has(e.source_node) && visibleIds.has(e.dest_node))
+      .map((fe) => {
+        const traceDim = highlightedNodeId != null && !connected.has(fe.edge_id)
+        const isDimmed = traceDim || (showFullDiagram && fe.volume <= 1)
+        return {
+          id: fe.edge_id,
+          source: fe.source_node,
+          target: fe.dest_node,
+          type: 'stream',
+          data: {
+            volume: fe.volume,
+            maxVolume: maxVol,
+            dimmed: isDimmed,
+            streamName: fe.display_name,
+          } satisfies StreamEdgeData,
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: isDimmed ? 'rgba(148,163,184,0.3)' : 'rgba(99,102,241,0.6)',
+            width: 10,
+            height: 10,
+          },
+        }
+      })
 
-  return { nodes, edges }
-}
+    // Apply dagre layout
+    return applyDagreLayout(rfNodes, rfEdges)
+  }, [result, showFullDiagram, highlightedNodeId])
 
-function buildGasolineBadges(
-  result: PlanningResult,
-): ProductNodeData['specBadges'] {
-  const blend = result.periods[0]?.blend_results?.[0]
-  if (!blend) return undefined
-  // We don't have the per-spec evaluation here yet (Sprint 6.4 will fetch
-  // /diagnostics for shadow prices). For now, show whether a recipe was found.
-  const total = Object.values(blend.recipe).reduce((a, b) => a + b, 0)
-  if (total <= 0) return undefined
-  return [
-    { name: 'RON ≥ 87', status: 'pass' },
-    { name: 'RVP ≤ 14', status: 'pass' },
-    { name: 'S ≤ 0.10', status: 'pass' },
-  ]
-}
+  const handleNodeClick = useCallback((_: unknown, node: Node) => {
+    onNodeClick?.(node.id)
+  }, [onNodeClick])
 
-export function RefineryFlowsheet({
-  result,
-  showFullDiagram = false,
-  highlightedNodeId = null,
-  onNodeClick,
-}: Props) {
-  // Build a quick map from unit name → diagnostic for binding indicators
-  const diagnosticsByUnit = useMemo(() => {
-    const map = new Map<string, ConstraintDiagnostic | undefined>()
-    result.constraint_diagnostics?.forEach((d) => {
-      if (!d.binding) return
-      if (d.constraint_name.startsWith('cdu_capacity')) {
-        map.set('cdu_1', d)
-      }
-      if (d.constraint_name.startsWith('fcc_capacity')) {
-        map.set('fcc_1', d)
-      }
-    })
-    return map
-  }, [result])
-
-  const { nodes, edges } = useMemo(
-    () => buildGraph(result, diagnosticsByUnit, showFullDiagram, highlightedNodeId),
-    [result, diagnosticsByUnit, showFullDiagram, highlightedNodeId],
-  )
+  const handlePaneClick = useCallback(() => {
+    onNodeClick?.(null)
+  }, [onNodeClick])
 
   return (
     <div className="h-full w-full overflow-hidden rounded-lg border border-slate-200 bg-white">
@@ -299,16 +186,26 @@ export function RefineryFlowsheet({
         edges={edges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        onNodeClick={(_e, node) => onNodeClick?.(node.id)}
-        onPaneClick={() => onNodeClick?.(null)}
+        onNodeClick={handleNodeClick}
+        onPaneClick={handlePaneClick}
         fitView
-        fitViewOptions={{ padding: 0.15 }}
+        fitViewOptions={{ padding: 0.2 }}
         proOptions={{ hideAttribution: true }}
-        minZoom={0.2}
-        maxZoom={1.5}
+        minZoom={0.15}
+        maxZoom={2}
       >
-        <Background gap={20} size={1} color="#e2e8f0" />
+        <Background gap={24} size={1} color="#f1f5f9" />
         <Controls position="bottom-right" showInteractive={false} />
+        <MiniMap
+          position="bottom-right"
+          style={{ bottom: 50, width: 150, height: 100 }}
+          nodeColor={(n) =>
+            n.type === 'purchase' ? '#fbbf24'
+            : n.type === 'unit' ? '#6366f1'
+            : '#10b981'
+          }
+          maskColor="rgba(241,245,249,0.7)"
+        />
       </ReactFlow>
     </div>
   )

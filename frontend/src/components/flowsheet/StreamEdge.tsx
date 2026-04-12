@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -6,71 +7,61 @@ import {
 } from '@xyflow/react'
 
 export interface StreamEdgeData extends Record<string, unknown> {
-  label?: string
   volume: number
   maxVolume: number
-  economicValue?: number
   dimmed?: boolean
+  streamName?: string
 }
 
-const fmt = (n: number) =>
-  n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n.toFixed(0)
+const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : n.toFixed(0))
 
 export function StreamEdge({
   id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  data,
-  markerEnd,
+  sourceX, sourceY, targetX, targetY,
+  sourcePosition, targetPosition,
+  data, markerEnd,
 }: EdgeProps) {
+  const [hovered, setHovered] = useState(false)
   const [edgePath, labelX, labelY] = getSmoothStepPath({
-    sourceX,
-    sourceY,
-    targetX,
-    targetY,
-    sourcePosition,
-    targetPosition,
+    sourceX, sourceY, targetX, targetY,
+    sourcePosition, targetPosition,
+    borderRadius: 12,
   })
 
-  const { volume, maxVolume, dimmed } = (data as StreamEdgeData) ?? {
-    volume: 0,
-    maxVolume: 1,
-    dimmed: false,
+  const { volume, maxVolume, dimmed, streamName } = (data as StreamEdgeData) ?? {
+    volume: 0, maxVolume: 1, dimmed: false,
   }
 
-  // Dimmed edges: thin dashed gray line for zero-flow in full diagram mode
   if (dimmed) {
     return (
       <BaseEdge
-        id={id}
-        path={edgePath}
-        style={{ stroke: 'rgba(148, 163, 184, 0.4)', strokeWidth: 1, strokeDasharray: '4 3' }}
-        markerEnd={markerEnd}
+        id={id} path={edgePath} markerEnd={markerEnd}
+        style={{ stroke: 'rgba(148,163,184,0.3)', strokeWidth: 1, strokeDasharray: '4 3' }}
       />
     )
   }
 
-  // Width: 2px to 12px proportional to volume
-  const ratio = maxVolume > 0 ? volume / maxVolume : 0
-  const strokeWidth = Math.max(2, Math.min(12, 2 + 10 * ratio))
-
-  // Color: lighter for low volume, darker (indigo) for high volume
-  const intensity = Math.max(0.25, ratio)
-  const color = `rgba(79, 70, 229, ${intensity.toFixed(2)})`
+  // Width: 1px < 1K, 3px 1K-10K, 6px > 10K
+  const strokeWidth = volume < 1000 ? 1 : volume < 10000 ? 3 : 6
+  const opacity = Math.max(0.3, Math.min(1, volume / (maxVolume || 1)))
+  const color = `rgba(99, 102, 241, ${opacity.toFixed(2)})`
 
   return (
     <>
-      <BaseEdge
-        id={id}
-        path={edgePath}
-        style={{ stroke: color, strokeWidth }}
-        markerEnd={markerEnd}
+      {/* Invisible wide hit-target for hover */}
+      <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={20}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
       />
-      {volume > 0 && (
+      <BaseEdge
+        id={id} path={edgePath} markerEnd={markerEnd}
+        style={{ stroke: color, strokeWidth }}
+      />
+      {hovered && volume > 0 && (
         <EdgeLabelRenderer>
           <div
             style={{
@@ -78,9 +69,11 @@ export function StreamEdge({
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
               pointerEvents: 'none',
             }}
-            className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-slate-700 shadow-sm"
+            className="z-50 rounded border border-slate-200 bg-white px-2 py-1 text-[10px] shadow-lg"
           >
-            {fmt(volume)} bbl/d
+            <div className="font-semibold text-slate-800">
+              {streamName || 'Stream'}: {fmt(volume)} bbl/d
+            </div>
           </div>
         </EdgeLabelRenderer>
       )}
