@@ -5,9 +5,10 @@ hook and exposes a thin REST surface over the Stage 1 engine. All
 business logic lives in `services.RefineryService`; routes only marshal
 HTTP requests / responses.
 
-Start with at least 2 workers so the solver doesn't block health/config GETs::
+Start with 1 worker for Stage 2A (in-memory scenario store is not shared
+across workers). Use --workers 2+ only after adding a shared store (Stage 2B)::
 
-    uvicorn eurekan.api.app:app --port 8000 --workers 2
+    uvicorn eurekan.api.app:app --port 8000
 """
 
 from __future__ import annotations
