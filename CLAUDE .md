@@ -136,6 +136,12 @@ These rules govern how code is written and validated in this project. They apply
 
 **Commit after every milestone:** Each passing test suite is a commit. Provides recovery points if subsequent work goes wrong.
 
+**Think before coding:** If a task is ambiguous, STATE your assumptions explicitly before writing code. If multiple interpretations exist, present them and ask. If a simpler approach exists than what was requested, say so. If confused, STOP and ask — do not guess and run with it.
+
+**Simplicity first:** Write the minimum code that solves the problem. No speculative features. No abstractions for single-use code. No "flexibility" or "configurability" that wasn't requested. No error handling for impossible scenarios. If 200 lines could be 50, rewrite it. Would a senior engineer say this is overcomplicated? If yes, simplify.
+
+**Surgical changes:** Touch ONLY what the task requires. Do not "improve" adjacent code, comments, or formatting. Do not refactor things that aren't broken. Match existing style. If you notice unrelated issues, MENTION them — don't fix them. When your changes create orphaned imports or variables, clean up YOUR mess only. Every changed line must trace directly to the task. This is especially critical in Stage 2: do NOT modify core/, models/, optimization/, parsers/, or analysis/ while building api/ or frontend/ unless explicitly asked.
+
 **Solver-specific guardrails:**
 - IPOPT requires a feasible starting point — never initialize variables at zero
 - All Pyomo constraints MUST be indexed by period `p` — even for N=1 cases

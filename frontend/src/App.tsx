@@ -9,6 +9,8 @@ import {
 
 import { quickOptimize } from './api/client'
 import { RefineryFlowsheet } from './components/flowsheet/RefineryFlowsheet'
+import { OptimizePanel } from './components/optimization/OptimizePanel'
+import { ResultsSummary } from './components/optimization/ResultsSummary'
 import { useRefineryStore } from './stores/refineryStore'
 
 type View = 'flowsheet' | 'scenarios' | 'oracle'
@@ -30,6 +32,7 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const activeResult = useRefineryStore((s) => s.activeResult)
   const isOptimizing = useRefineryStore((s) => s.isOptimizing)
+  const isStale = useRefineryStore((s) => s.isStale)
   const startOptimizing = useRefineryStore((s) => s.startOptimizing)
   const finishOptimizing = useRefineryStore((s) => s.finishOptimizing)
 
@@ -51,7 +54,6 @@ function App() {
     return () => {
       cancelled = true
     }
-    // run-once: empty deps intentional
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -95,6 +97,13 @@ function App() {
           </ul>
         </nav>
 
+        {/* Results sidebar panel */}
+        {activeResult && (
+          <div className="border-t border-slate-200 p-3">
+            <ResultsSummary result={activeResult} isStale={isStale} />
+          </div>
+        )}
+
         <div className="border-t border-slate-200 px-6 py-4 text-xs text-slate-400">
           v0.2.0 · Stage 2A
         </div>
@@ -102,27 +111,12 @@ function App() {
 
       {/* Main column */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-6">
-          <h1 className="text-base font-semibold text-slate-900">
-            Eurekan Refinery Planner
-          </h1>
-          <div className="flex items-center gap-4 text-xs text-slate-500">
-            {activeResult && (
-              <span className="font-semibold text-slate-900">
-                Margin:{' '}
-                <span className="tabular-nums text-emerald-600">
-                  ${(activeResult.total_margin / 1000).toFixed(1)}k/d
-                </span>
-              </span>
-            )}
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
-              API connected
-            </span>
-          </div>
-        </header>
+        {/* Optimize panel (fixed at top) */}
+        <div className="border-b border-slate-200 bg-white">
+          <OptimizePanel />
+        </div>
 
-        <main className="flex-1 overflow-hidden bg-slate-50 p-6">
+        <main className="flex-1 overflow-hidden bg-slate-50 p-4">
           {activeView === 'flowsheet' && (
             <FlowsheetView
               isOptimizing={isOptimizing}
@@ -206,7 +200,7 @@ function ViewPlaceholder({ view }: { view: View }) {
       <h2 className="text-2xl font-semibold text-slate-900">{titles[view]}</h2>
       <p className="mt-2 text-sm text-slate-500">{subtitles[view]}</p>
       <p className="mt-6 inline-block rounded-md bg-slate-100 px-3 py-1 text-xs text-slate-500">
-        Coming in Sprint 6.4+
+        Coming in Sprint 7+
       </p>
     </div>
   )

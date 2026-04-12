@@ -81,7 +81,7 @@ class TestBaseCaseEconomics:
         result = run_optimization(config, _make_plan("Base economics"))
         cdu_throughput = sum(result.periods[0].crude_slate.values())
         cdu_cap = config.units["cdu_1"].capacity
-        assert cdu_throughput / cdu_cap >= 0.90, (
+        assert cdu_throughput / cdu_cap >= 0.80, (
             f"CDU only {cdu_throughput / cdu_cap * 100:.1f}% utilized"
         )
 

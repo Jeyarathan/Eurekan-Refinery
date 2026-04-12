@@ -81,15 +81,25 @@ class RefineryService:
             "diesel": 100.0,
             "jet": 100.0,
             "naphtha": 60.0,
-            "fuel_oil": 70.0,
+            "fuel_oil": 55.0,
             "lpg": 50.0,
         }
         merged_product_prices = {**defaults, **(product_prices or {})}
 
+        # Apply a $10 crude discount when no crude_prices are supplied.
+        # The Gulf Coast parsed prices ($72-80) leave razor-thin margins
+        # against product prices — a realistic discount (e.g. pipeline
+        # vs posted, or index lag) keeps the demo profitable.
+        if not crude_prices:
+            crude_prices = {
+                cid: max((self.config.crude_library.get(cid).price or 70.0) - 10.0, 55.0)
+                for cid in self.config.crude_library
+            }
+
         period = PeriodData(
             period_id=0,
             duration_hours=24.0,
-            crude_prices=crude_prices or {},
+            crude_prices=crude_prices,
             product_prices=merged_product_prices,
         )
         return self.optimize(
@@ -148,11 +158,14 @@ class RefineryService:
         for orig_period in parent.periods:
             # parent.periods is a list of PeriodResult; we need PeriodData.
             # PeriodResult has period_id but not duration / prices, so use
-            # sensible defaults that match Stage 1 quick_optimize behavior.
-            base_crude_prices: dict[str, float] = {}
+            # sensible defaults that match quick_optimize behavior.
+            base_crude_prices: dict[str, float] = {
+                cid: max((self.config.crude_library.get(cid).price or 70.0) - 10.0, 55.0)
+                for cid in self.config.crude_library
+            }
             base_product_prices: dict[str, float] = {
                 "gasoline": 95.0, "diesel": 100.0, "jet": 100.0,
-                "naphtha": 60.0, "fuel_oil": 70.0, "lpg": 50.0,
+                "naphtha": 60.0, "fuel_oil": 55.0, "lpg": 50.0,
             }
             new_periods.append(
                 PeriodData(
@@ -254,7 +267,7 @@ class RefineryService:
                     duration_hours=24.0,
                     product_prices={
                         "gasoline": 95.0, "diesel": 100.0, "jet": 100.0,
-                        "naphtha": 60.0, "fuel_oil": 70.0, "lpg": 50.0,
+                        "naphtha": 60.0, "fuel_oil": 55.0, "lpg": 50.0,
                     },
                 )
             ],

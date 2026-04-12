@@ -273,11 +273,11 @@ class EurekanSolver:
             self.generate_heuristic_start(model, config, plan)
             return
 
-        # Copy LP solution into NLP variables
+        # Copy LP solution into NLP variables (respecting any already-fixed vars)
         crude_ids = list(model.CRUDES)
         for p in model.PERIODS:
             for cid in crude_ids:
-                model.crude_rate[cid, p].set_value(pyo.value(lp_model.crude_rate[cid, p]))
+                self._set_if_free(model.crude_rate[cid, p], pyo.value(lp_model.crude_rate[cid, p]))
 
             # FCC mode → effective conversion (convex combination of mode anchors)
             mode_select = [pyo.value(lp_model.fcc_mode[p, m]) for m in range(len(self.LP_FCC_MODES))]
@@ -286,11 +286,11 @@ class EurekanSolver:
                 eff_conv = sum(self.LP_FCC_MODES[i] * mode_select[i] for i in range(len(mode_select))) / total_mode
             else:
                 eff_conv = 80.0
-            model.fcc_conversion[p].set_value(eff_conv)
+            self._set_if_free(model.fcc_conversion[p], eff_conv)
 
             vgo_to_fcc_val = pyo.value(lp_model.vgo_to_fcc[p])
-            model.vgo_to_fcc[p].set_value(vgo_to_fcc_val)
-            model.vgo_to_fo[p].set_value(pyo.value(lp_model.vgo_to_fo[p]))
+            self._set_if_free(model.vgo_to_fcc[p], vgo_to_fcc_val)
+            self._set_if_free(model.vgo_to_fo[p], pyo.value(lp_model.vgo_to_fo[p]))
 
             # FCC outputs from the LP modes
             yields = _fcc_yields_at(eff_conv)
@@ -302,7 +302,7 @@ class EurekanSolver:
                 ("c3", "fcc_c3_vol"),
                 ("c4", "fcc_c4_vol"),
             ]:
-                getattr(model, attr)[p].set_value(vgo_to_fcc_val * yields[key])
+                self._set_if_free(getattr(model, attr)[p], vgo_to_fcc_val * yields[key])
 
             # Dispositions
             for var_name in [
@@ -315,7 +315,7 @@ class EurekanSolver:
                 "reformate_purchased",
             ]:
                 lp_var = getattr(lp_model, var_name)
-                getattr(model, var_name)[p].set_value(pyo.value(lp_var[p]))
+                self._set_if_free(getattr(model, var_name)[p], pyo.value(lp_var[p]))
 
             # Product volumes (also seed sales = production at warm-start)
             for prod in ("gasoline", "naphtha", "jet", "diesel", "fuel_oil", "lpg"):
@@ -360,11 +360,13 @@ class EurekanSolver:
         m.vgo_to_fcc = pyo.Var(m.PERIODS, bounds=(0.0, fcc_cap), initialize=0.0)
         m.vgo_to_fo = pyo.Var(m.PERIODS, bounds=(0.0, 1e6), initialize=0.0)
 
+        # Reformate capped at 10K to match the NLP
+        m.reformate_purchased = pyo.Var(m.PERIODS, bounds=(0.0, 10_000.0), initialize=0.0)
+
         for var_name in [
             "ln_to_blend", "ln_to_sell", "hn_to_blend", "hn_to_sell",
             "hcn_to_blend", "hcn_to_fo", "lco_to_diesel", "lco_to_fo",
             "kero_to_jet", "kero_to_diesel", "nc4_to_blend", "nc4_to_lpg",
-            "reformate_purchased",
             "gasoline_volume", "naphtha_volume", "jet_volume",
             "diesel_volume", "fuel_oil_volume", "lpg_volume",
         ]:
@@ -648,26 +650,37 @@ class EurekanSolver:
         config: RefineryConfig,
         plan: PlanDefinition,
     ) -> SolveResult:
-        """Try Tier 1, then Tier 2, then Tier 3 multi-start until something solves."""
+        """Try Tier 1 AND Tier 2 starts; keep the BETTER feasible result.
+
+        Non-convex NLP can trap IPOPT at local optima. The heuristic
+        warm-start and the LP relaxation start often land in different
+        basins. Running both and comparing objectives avoids the worst
+        local-optimum traps (e.g. VGO → fuel-oil vs VGO → FCC).
+        """
+        best: Optional[SolveResult] = None
+
         # Tier 1: heuristic warm-start
         self.generate_heuristic_start(model, config, plan)
-        result = self.solve(model)
-        result.tier_used = 1
-        if result.feasible:
-            return result
+        t1 = self.solve(model)
+        t1.tier_used = 1
+        if t1.feasible:
+            best = t1
 
-        # Tier 2: LP relaxation
+        # Tier 2: LP relaxation start (always tried — different basin)
         try:
             self.generate_lp_start(model, config, plan)
-            result = self.solve(model)
-            result.tier_used = 2
-            if result.feasible:
-                return result
-        except Exception as exc:
-            result = SolveResult(status="error", tier_used=2, message=str(exc))
+            t2 = self.solve(model)
+            t2.tier_used = 2
+            if t2.feasible:
+                if best is None or t2.objective_value > best.objective_value:
+                    best = t2
+        except Exception:
+            pass
+
+        if best is not None:
+            return best
 
         # Tier 3: Multi-start with 5 random perturbations
-        best: Optional[SolveResult] = None
         for seed in range(1, 6):
             try:
                 self.generate_random_start(model, config, plan, seed)

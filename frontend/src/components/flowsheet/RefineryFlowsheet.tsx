@@ -112,22 +112,29 @@ function buildGraph(
         }
       } else if (type === 'unit') {
         nodeType = 'unit'
-        const cduCapacity = 80000
         const isCDU = flowNode.node_id === 'cdu_1'
-        // Use period totals to get accurate CDU throughput (the flow node throughput
-        // can be wrong due to a Stage 1 modes.py oversight — sum the crude slate instead)
+        const isFCC = flowNode.node_id === 'fcc_1'
+        const diag = diagnosticsByUnit.get(flowNode.node_id)
+
+        // CDU: throughput from crude slate sum; capacity from config
         const cduThroughput = isCDU
           ? Object.values(period?.crude_slate ?? {}).reduce((a, b) => a + b, 0)
           : flowNode.throughput
-        const diag = diagnosticsByUnit.get(flowNode.node_id)
+
+        // FCC: get regen temp from equipment status
+        const regenEquip = fcc?.equipment?.find(
+          (e) => e.name === 'regen_temp',
+        )
+
         data = {
           label: flowNode.display_name,
           unitId: flowNode.node_id,
-          throughput: cduThroughput,
-          capacity: isCDU ? cduCapacity : undefined,
-          conversion: fcc?.conversion ?? null,
-          regenUtilPct: fcc
-            ? Math.min((fcc.yields.regen_temp ?? 1100) / 1400 * 100, 100)
+          throughput: isCDU ? cduThroughput : flowNode.throughput,
+          capacity: isCDU ? 80000 : isFCC ? 60000 : undefined,
+          // FCC-only fields: conversion and regen temp utilization
+          conversion: isFCC ? (fcc?.conversion ?? null) : null,
+          regenUtilPct: isFCC && regenEquip
+            ? regenEquip.utilization_pct
             : null,
           binding: !!diag?.binding,
           bindingHint: diag?.relaxation_suggestion ?? undefined,

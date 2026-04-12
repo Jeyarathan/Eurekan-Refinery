@@ -231,8 +231,10 @@ def _build_planning_result(
 
             if rate > 1e-6:
                 add_node(f"crude_{cid}", FlowNodeType.PURCHASE, cid, rate)
-                add_node("cdu_1", FlowNodeType.UNIT, "CDU 1", cdu_throughput)
                 add_edge(f"crude_{cid}", "cdu_1", cid, rate)
+
+        # CDU node — throughput is the total crude rate
+        add_node("cdu_1", FlowNodeType.UNIT, "CDU 1", cdu_throughput)
 
         # Pull product SALES (revenue and demand are based on sales)
         gasoline = _safe_value(model.gasoline_sales[p])
@@ -276,14 +278,34 @@ def _build_planning_result(
             if cdu_throughput > 0:
                 crude_revenue_attribution[cid] += revenue * (rate / cdu_throughput)
 
-        # FCC result
+        # Extract VGO / FCC variables (needed by both FCC result and flow graph)
+        vgo_to_fcc_val = _safe_value(model.vgo_to_fcc[p])
+
+        # FCC result with equipment status
         conversion = _safe_value(model.fcc_conversion[p])
         fcc_yields_dict = _fcc_yields_at(conversion)
+        from eurekan.core.results import EquipmentStatus
+
+        regen_temp = fcc_yields_dict.get("regen_temp", 1100.0)
+        regen_limit = 1400.0
+        if "fcc_1" in config.units:
+            regen_limit = config.units["fcc_1"].equipment_limits.get(
+                "fcc_regen_temp_max", 1400.0
+            )
         fcc_result = FCCResult(
             conversion=conversion,
-            yields=fcc_yields_dict,
+            yields={**fcc_yields_dict, "vgo_to_fcc": vgo_to_fcc_val},
             properties={},
-            equipment=[],
+            equipment=[
+                EquipmentStatus(
+                    name="regen_temp",
+                    display_name="Regenerator Temperature",
+                    current_value=regen_temp,
+                    limit=regen_limit,
+                    utilization_pct=min(regen_temp / regen_limit * 100, 100),
+                    is_binding=regen_temp >= regen_limit * 0.99,
+                ),
+            ],
         )
 
         # Disposition results
@@ -320,17 +342,100 @@ def _build_planning_result(
             recipe=blend_recipe,
         )
 
-        # Add product nodes/edges to the flow graph
+        # ---------------------------------------------------------------
+        # Build the full flow graph: CDU → (streams) → FCC → products
+        # ---------------------------------------------------------------
+
+        # FCC node — only if VGO is fed to the FCC
+        vgo_to_fcc_val = _safe_value(model.vgo_to_fcc[p])
+        vgo_to_fo_val = _safe_value(model.vgo_to_fo[p])
+        fcc_lcn = _safe_value(model.fcc_lcn_vol[p])
+        fcc_hcn = _safe_value(model.fcc_hcn_vol[p])
+        fcc_lco = _safe_value(model.fcc_lco_vol[p])
+        fcc_coke = _safe_value(model.fcc_coke_vol[p])
+        fcc_c3 = _safe_value(model.fcc_c3_vol[p])
+        fcc_c4 = _safe_value(model.fcc_c4_vol[p])
+        hcn_to_blend = _safe_value(model.hcn_to_blend[p])
+        hcn_to_fo = _safe_value(model.hcn_to_fo[p])
+        lco_to_diesel_val = _safe_value(model.lco_to_diesel[p])
+        lco_to_fo_val = _safe_value(model.lco_to_fo[p])
+
+        if vgo_to_fcc_val > 1.0:
+            add_node("fcc_1", FlowNodeType.UNIT, "FCC 1", vgo_to_fcc_val)
+            add_edge("cdu_1", "fcc_1", "VGO", vgo_to_fcc_val)
+
+        # CDU → Naphtha sales
+        ln_sell = _safe_value(model.ln_to_sell[p])
+        hn_sell = _safe_value(model.hn_to_sell[p])
+        naphtha_sell_total = ln_sell + hn_sell
+        if naphtha_sell_total > 1.0:
+            add_node("sale_naphtha", FlowNodeType.SALE_POINT, "Naphtha", naphtha)
+            add_edge("cdu_1", "sale_naphtha", "Naphtha", naphtha_sell_total)
+
+        # CDU → Jet
+        kero_jet = _safe_value(model.kero_to_jet[p])
+        if kero_jet > 1.0:
+            add_node("sale_jet", FlowNodeType.SALE_POINT, "Jet", jet)
+            add_edge("cdu_1", "sale_jet", "Kerosene", kero_jet)
+
+        # CDU → Diesel (CDU diesel portion + kero_to_diesel)
+        kero_diesel = _safe_value(model.kero_to_diesel[p])
+        add_node("sale_diesel", FlowNodeType.SALE_POINT, "Diesel", diesel)
+        if diesel > 1.0:
+            # CDU diesel + kero → diesel
+            cdu_diesel_direct = diesel - lco_to_diesel_val
+            if cdu_diesel_direct > 1.0:
+                add_edge("cdu_1", "sale_diesel", "Diesel", cdu_diesel_direct)
+
+        # CDU → Fuel oil (VGO bypass + vacuum residue)
+        vresid = cdu_throughput * 0.07  # approximate; real value from constraints
+        fo_from_cdu = vgo_to_fo_val + max(vresid, 0)
+        add_node("sale_fuel_oil", FlowNodeType.SALE_POINT, "Fuel Oil", fuel_oil)
+        if fo_from_cdu > 1.0:
+            add_edge("cdu_1", "sale_fuel_oil", "VGO bypass + VR", fo_from_cdu)
+
+        # CDU → LPG
+        if lpg > 1.0:
+            add_node("sale_lpg", FlowNodeType.SALE_POINT, "LPG", lpg)
+            add_edge("cdu_1", "sale_lpg", "LPG", lpg)
+
+        # FCC → Gasoline Blender (LCN + HCN_to_blend)
+        fcc_to_blend = fcc_lcn + hcn_to_blend
         add_node("blend_gasoline", FlowNodeType.BLEND_HEADER, "Gasoline Blender", gasoline)
+        if fcc_to_blend > 1.0:
+            add_edge("fcc_1", "blend_gasoline", "LCN + HCN", fcc_to_blend)
+
+        # CDU → Gasoline Blender (LN_blend + HN_blend)
+        ln_blend = _safe_value(model.ln_to_blend[p])
+        hn_blend = _safe_value(model.hn_to_blend[p])
+        cdu_to_blend = ln_blend + hn_blend
+        if cdu_to_blend > 1.0:
+            add_edge("cdu_1", "blend_gasoline", "LN + HN", cdu_to_blend)
+
+        # Reformate → Gasoline Blender
+        reformate = _safe_value(model.reformate_purchased[p])
+        if reformate > 1.0:
+            add_node("purchase_reformate", FlowNodeType.PURCHASE, "Reformate", reformate)
+            add_edge("purchase_reformate", "blend_gasoline", "Reformate", reformate)
+
+        # Gasoline Blender → Gasoline sale
         add_node("sale_gasoline", FlowNodeType.SALE_POINT, "Gasoline", gasoline)
-        if gasoline > 1e-6:
-            add_edge("blend_gasoline", "sale_gasoline", "gasoline", gasoline)
-        for prod, vol in product_volumes.items():
-            if prod == "gasoline" or vol <= 1e-6:
-                continue
-            sale_id = f"sale_{prod}"
-            add_node(sale_id, FlowNodeType.SALE_POINT, prod, vol)
-            add_edge("cdu_1", sale_id, prod, vol)
+        if gasoline > 1.0:
+            add_edge("blend_gasoline", "sale_gasoline", "Gasoline", gasoline)
+
+        # FCC → Diesel (LCO to diesel)
+        if lco_to_diesel_val > 1.0:
+            add_edge("fcc_1", "sale_diesel", "LCO", lco_to_diesel_val)
+
+        # FCC → Fuel oil (HCN_to_fo + LCO_to_fo)
+        fcc_to_fo = hcn_to_fo + lco_to_fo_val
+        if fcc_to_fo > 1.0:
+            add_edge("fcc_1", "sale_fuel_oil", "HCN + LCO slop", fcc_to_fo)
+
+        # FCC → LPG (C3 + C4)
+        fcc_to_lpg = fcc_c3 + fcc_c4
+        if fcc_to_lpg > 1.0 and lpg > 1.0:
+            add_edge("fcc_1", "sale_lpg", "C3 + C4", fcc_to_lpg)
 
         # CDU dispositions in CDU yields (cuts)
         cdu_cuts = {

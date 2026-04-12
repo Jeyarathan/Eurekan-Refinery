@@ -60,8 +60,11 @@ _DIESEL_HT_COST = 2.0
 _BLEND_COMPONENT_PROPS: dict[str, dict[str, float]] = {
     "cdu_ln":   {"ron": 68.0, "rvp": 12.5, "sulfur": 0.02, "spg": 0.66, "benzene": 2.0, "aromatics": 8.0,  "olefins": 1.0},
     "cdu_hn":   {"ron": 55.0, "rvp": 1.5,  "sulfur": 0.05, "spg": 0.74, "benzene": 1.0, "aromatics": 12.0, "olefins": 0.5},
-    "fcc_lcn":  {"ron": 92.0, "rvp": 10.5, "sulfur": 0.05, "spg": 0.70, "benzene": 0.5, "aromatics": 25.0, "olefins": 30.0},
-    "fcc_hcn":  {"ron": 86.0, "rvp": 2.0,  "sulfur": 0.30, "spg": 0.82, "benzene": 0.8, "aromatics": 45.0, "olefins": 8.0},
+    # FCC naphtha properties AFTER hydrotreating (Scanfiner).  All US refineries
+    # hydro-treat FCC naphtha before blending.  Pre-treatment sulfur is 500-3000
+    # ppm; post-treatment is 10-50 ppm.  Olefins are partially saturated.
+    "fcc_lcn":  {"ron": 92.0, "rvp": 10.5, "sulfur": 0.001, "spg": 0.70, "benzene": 0.5, "aromatics": 25.0, "olefins": 25.0},
+    "fcc_hcn":  {"ron": 86.0, "rvp": 2.0,  "sulfur": 0.005, "spg": 0.82, "benzene": 0.8, "aromatics": 45.0, "olefins": 6.0},
     "n_butane": {"ron": 93.8, "rvp": 51.6, "sulfur": 0.0,  "spg": 0.585, "benzene": 0.0, "aromatics": 0.0,  "olefins": 0.0},
     "reformate":{"ron": 98.0, "rvp": 4.0,  "sulfur": 0.001,"spg": 0.79, "benzene": 1.5, "aromatics": 65.0, "olefins": 1.0},
 }
@@ -197,8 +200,10 @@ class PyomoModelBuilder:
         ]:
             setattr(m, var_name, pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0))
 
-        # Reformate purchase
-        m.reformate_purchased = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+        # Reformate purchase — capped at 10K bbl/d (scarce purchased product;
+        # in a refinery without a reformer, reformate is a specialty buy).
+        # This forces the FCC to fill the gasoline pool, not unlimited reformate.
+        m.reformate_purchased = pyo.Var(m.PERIODS, bounds=(0.0, 10_000.0), initialize=0.0)
 
         # FCC product volumes (intermediate variables — defined by yield constraints)
         for var_name in [
