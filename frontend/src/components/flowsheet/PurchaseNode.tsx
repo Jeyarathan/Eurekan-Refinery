@@ -5,15 +5,16 @@ export interface PurchaseNodeData extends Record<string, unknown> {
   label: string
   volume: number
   pricePerBbl?: number | null
+  dimmed?: boolean
 }
 
 const fmt = (n: number) =>
   n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n.toFixed(0)
 
 export function PurchaseNode({ data }: NodeProps) {
-  const { label, volume, pricePerBbl } = data as PurchaseNodeData
+  const { label, volume, pricePerBbl, dimmed } = data as PurchaseNodeData
   return (
-    <div className="min-w-[150px] rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm">
+    <div className={`min-w-[150px] rounded-lg border bg-white px-4 py-3 shadow-sm ${dimmed ? 'border-slate-100 opacity-30' : 'border-slate-200'}`}>
       <div className="flex items-center gap-2">
         <div className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-100 text-amber-700">
           <Droplet size={14} strokeWidth={2.5} />

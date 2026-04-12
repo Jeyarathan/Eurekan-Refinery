@@ -18,11 +18,13 @@ interface RefineryState {
   isOptimizing: boolean
   lastOptimizedAt: Date | null
   lastInputChangedAt: Date | null
+  showFullDiagram: boolean
 
   setActiveResult: (result: PlanningResult) => void
   markStale: () => void
   startOptimizing: () => void
   finishOptimizing: (result: PlanningResult) => void
+  toggleFullDiagram: () => void
   reset: () => void
 }
 
@@ -33,6 +35,7 @@ export const useRefineryStore = create<RefineryState>((set) => ({
   isOptimizing: false,
   lastOptimizedAt: null,
   lastInputChangedAt: null,
+  showFullDiagram: false,
 
   setActiveResult: (result) =>
     set({
@@ -58,6 +61,9 @@ export const useRefineryStore = create<RefineryState>((set) => ({
       isStale: false,
       lastOptimizedAt: new Date(),
     }),
+
+  toggleFullDiagram: () =>
+    set((s) => ({ showFullDiagram: !s.showFullDiagram })),
 
   reset: () =>
     set({

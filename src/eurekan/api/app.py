@@ -4,6 +4,10 @@ The app loads the Gulf Coast configuration on startup via the lifespan
 hook and exposes a thin REST surface over the Stage 1 engine. All
 business logic lives in `services.RefineryService`; routes only marshal
 HTTP requests / responses.
+
+Start with at least 2 workers so the solver doesn't block health/config GETs::
+
+    uvicorn eurekan.api.app:app --port 8000 --workers 2
 """
 
 from __future__ import annotations

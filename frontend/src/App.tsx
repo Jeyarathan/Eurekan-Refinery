@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Component, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
   GitBranch,
@@ -33,27 +33,25 @@ function App() {
   const activeResult = useRefineryStore((s) => s.activeResult)
   const isOptimizing = useRefineryStore((s) => s.isOptimizing)
   const isStale = useRefineryStore((s) => s.isStale)
-  const startOptimizing = useRefineryStore((s) => s.startOptimizing)
-  const finishOptimizing = useRefineryStore((s) => s.finishOptimizing)
 
-  // Trigger an initial solve on mount
+  // Mutex ref survives StrictMode double-mount — prevents the second
+  // useEffect invocation from firing a duplicate API call that would
+  // queue behind the first on the single-worker backend and hang.
+  const fetchStarted = useRef(false)
+
   useEffect(() => {
-    let cancelled = false
-    async function run() {
-      startOptimizing()
-      try {
-        const result = await quickOptimize({ scenario_name: 'Initial' })
-        if (!cancelled) finishOptimizing(result)
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e))
-        }
-      }
-    }
-    run()
-    return () => {
-      cancelled = true
-    }
+    if (fetchStarted.current) return
+    fetchStarted.current = true
+
+    useRefineryStore.getState().startOptimizing()
+    quickOptimize({ scenario_name: 'Initial' })
+      .then((result) => {
+        useRefineryStore.getState().finishOptimizing(result)
+      })
+      .catch((e) => {
+        useRefineryStore.setState({ isOptimizing: false })
+        setError(e instanceof Error ? e.message : String(e))
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -140,7 +138,9 @@ function FlowsheetView({
   error: string | null
   hasResult: boolean
 }) {
+  // All hooks MUST be called before any early returns (Rules of Hooks)
   const activeResult = useRefineryStore((s) => s.activeResult)
+  const showFull = useRefineryStore((s) => s.showFullDiagram)
 
   if (error) {
     return (
@@ -180,7 +180,11 @@ function FlowsheetView({
     )
   }
 
-  return <RefineryFlowsheet result={activeResult} />
+  return (
+    <ErrorBoundary>
+      <RefineryFlowsheet result={activeResult} showFullDiagram={showFull} />
+    </ErrorBoundary>
+  )
 }
 
 function ViewPlaceholder({ view }: { view: View }) {
@@ -204,6 +208,36 @@ function ViewPlaceholder({ view }: { view: View }) {
       </p>
     </div>
   )
+}
+
+// ErrorBoundary catches render crashes and shows them instead of a white screen.
+class ErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex h-full items-center justify-center p-8">
+          <div className="max-w-lg rounded-lg border border-rose-200 bg-rose-50 p-6">
+            <h2 className="text-lg font-semibold text-rose-900">
+              Render error
+            </h2>
+            <pre className="mt-2 overflow-auto whitespace-pre-wrap text-xs text-rose-700">
+              {this.state.error.message}
+            </pre>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }
 
 export default App

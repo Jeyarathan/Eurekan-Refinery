@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { AlertTriangle, Play, Zap } from 'lucide-react'
+import { AlertTriangle, Eye, Network, Play, Zap } from 'lucide-react'
 
 import { quickOptimize } from '../../api/client'
 import { useRefineryStore } from '../../stores/refineryStore'
@@ -20,6 +20,8 @@ export function OptimizePanel() {
   const activeResult = useRefineryStore((s) => s.activeResult)
   const startOptimizing = useRefineryStore((s) => s.startOptimizing)
   const finishOptimizing = useRefineryStore((s) => s.finishOptimizing)
+  const showFullDiagram = useRefineryStore((s) => s.showFullDiagram)
+  const toggleFullDiagram = useRefineryStore((s) => s.toggleFullDiagram)
 
   const handleOptimize = useCallback(async () => {
     startOptimizing()
@@ -82,6 +84,20 @@ export function OptimizePanel() {
             <Zap size={16} strokeWidth={2.5} />
           )}
           {isOptimizing ? 'Solving…' : 'Optimize'}
+        </button>
+
+        {/* Live Flow / Full Diagram toggle */}
+        <button
+          type="button"
+          onClick={toggleFullDiagram}
+          className={`flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs font-medium transition-colors ${
+            showFullDiagram
+              ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          {showFullDiagram ? <Network size={14} /> : <Eye size={14} />}
+          {showFullDiagram ? 'Full Diagram' : 'Live Flow'}
         </button>
 
         {/* Results summary (inline) */}

@@ -650,37 +650,26 @@ class EurekanSolver:
         config: RefineryConfig,
         plan: PlanDefinition,
     ) -> SolveResult:
-        """Try Tier 1 AND Tier 2 starts; keep the BETTER feasible result.
-
-        Non-convex NLP can trap IPOPT at local optima. The heuristic
-        warm-start and the LP relaxation start often land in different
-        basins. Running both and comparing objectives avoids the worst
-        local-optimum traps (e.g. VGO → fuel-oil vs VGO → FCC).
-        """
-        best: Optional[SolveResult] = None
-
-        # Tier 1: heuristic warm-start
+        """Tier 1 → Tier 2 → Tier 3 cascade. Returns as soon as one succeeds."""
+        # Tier 1: heuristic warm-start (fast — usually works)
         self.generate_heuristic_start(model, config, plan)
         t1 = self.solve(model)
         t1.tier_used = 1
         if t1.feasible:
-            best = t1
+            return t1
 
-        # Tier 2: LP relaxation start (always tried — different basin)
+        # Tier 2: LP relaxation start (if Tier 1 failed)
         try:
             self.generate_lp_start(model, config, plan)
             t2 = self.solve(model)
             t2.tier_used = 2
             if t2.feasible:
-                if best is None or t2.objective_value > best.objective_value:
-                    best = t2
+                return t2
         except Exception:
             pass
 
-        if best is not None:
-            return best
-
         # Tier 3: Multi-start with 5 random perturbations
+        best: Optional[SolveResult] = None
         for seed in range(1, 6):
             try:
                 self.generate_random_start(model, config, plan, seed)

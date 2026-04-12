@@ -10,6 +10,7 @@ export interface StreamEdgeData extends Record<string, unknown> {
   volume: number
   maxVolume: number
   economicValue?: number
+  dimmed?: boolean
 }
 
 const fmt = (n: number) =>
@@ -35,10 +36,24 @@ export function StreamEdge({
     targetPosition,
   })
 
-  const { volume, maxVolume } = (data as StreamEdgeData) ?? {
+  const { volume, maxVolume, dimmed } = (data as StreamEdgeData) ?? {
     volume: 0,
     maxVolume: 1,
+    dimmed: false,
   }
+
+  // Dimmed edges: thin dashed gray line for zero-flow in full diagram mode
+  if (dimmed) {
+    return (
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        style={{ stroke: 'rgba(148, 163, 184, 0.4)', strokeWidth: 1, strokeDasharray: '4 3' }}
+        markerEnd={markerEnd}
+      />
+    )
+  }
+
   // Width: 2px to 12px proportional to volume
   const ratio = maxVolume > 0 ? volume / maxVolume : 0
   const strokeWidth = Math.max(2, Math.min(12, 2 + 10 * ratio))

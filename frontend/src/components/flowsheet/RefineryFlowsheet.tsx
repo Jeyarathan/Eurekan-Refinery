@@ -51,6 +51,7 @@ const PRODUCT_PRICE_DEFAULTS: Record<string, number> = {
 
 interface Props {
   result: PlanningResult
+  showFullDiagram?: boolean
 }
 
 interface BuiltGraph {
@@ -61,16 +62,20 @@ interface BuiltGraph {
 function buildGraph(
   result: PlanningResult,
   diagnosticsByUnit: Map<string, ConstraintDiagnostic | undefined>,
+  showFullDiagram = false,
 ): BuiltGraph {
   const flow = result.material_flow
   const period = result.periods[0]
   const fcc = period?.fcc_result ?? null
 
-  // Filter out the noise: drop nodes whose throughput is essentially zero
-  const significantNodes = flow.nodes.filter((n) => {
-    if (n.node_type === 'purchase') return n.throughput > 1
-    return true
-  })
+  // In Live Flow mode, drop zero-throughput nodes.
+  // In Full Diagram mode, keep everything.
+  const significantNodes = showFullDiagram
+    ? flow.nodes
+    : flow.nodes.filter((n) => {
+        if (n.node_type === 'purchase') return n.throughput > 1
+        return true
+      })
 
   // Group by column to compute y positions
   const byColumn = new Map<string, FlowNode[]>()
@@ -102,13 +107,15 @@ function buildGraph(
         | UnitNodeData
         | ProductNodeData
 
+      const isDimmed = showFullDiagram && flowNode.throughput <= 1
+
       if (type === 'purchase') {
         nodeType = 'purchase'
-        // Strip the 'crude_' prefix for display
         const label = flowNode.display_name || flowNode.node_id.replace(/^crude_/, '')
         data = {
           label,
           volume: flowNode.throughput,
+          dimmed: isDimmed,
         }
       } else if (type === 'unit') {
         nodeType = 'unit'
@@ -195,10 +202,13 @@ function buildGraph(
         volume: flowEdge.volume,
         maxVolume,
         economicValue: flowEdge.economic_value,
+        dimmed: showFullDiagram && flowEdge.volume <= 1,
       } satisfies StreamEdgeData,
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        color: 'rgba(79, 70, 229, 0.6)',
+        color: flowEdge.volume <= 1 && showFullDiagram
+          ? 'rgba(148, 163, 184, 0.4)'
+          : 'rgba(79, 70, 229, 0.6)',
       },
     }))
 
@@ -221,7 +231,7 @@ function buildGasolineBadges(
   ]
 }
 
-export function RefineryFlowsheet({ result }: Props) {
+export function RefineryFlowsheet({ result, showFullDiagram = false }: Props) {
   // Build a quick map from unit name → diagnostic for binding indicators
   const diagnosticsByUnit = useMemo(() => {
     const map = new Map<string, ConstraintDiagnostic | undefined>()
@@ -238,8 +248,8 @@ export function RefineryFlowsheet({ result }: Props) {
   }, [result])
 
   const { nodes, edges } = useMemo(
-    () => buildGraph(result, diagnosticsByUnit),
-    [result, diagnosticsByUnit],
+    () => buildGraph(result, diagnosticsByUnit, showFullDiagram),
+    [result, diagnosticsByUnit, showFullDiagram],
   )
 
   return (
