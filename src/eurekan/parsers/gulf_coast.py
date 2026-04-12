@@ -212,6 +212,7 @@ PIMS_NAPH_PROP_MAP: dict[str, str] = {
 PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     "CAT1": ("cdu_1", UnitType.CDU, "Crude Unit #1"),
     "CCCU": ("fcc_1", UnitType.FCC, "Cat Cracker"),
+    "CLPR": ("reformer_1", UnitType.REFORMER, "Catalytic Reformer"),
 }
 
 # ProcLim tag → (equipment_limit_key, description)

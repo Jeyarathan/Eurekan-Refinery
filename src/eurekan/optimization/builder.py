@@ -133,6 +133,11 @@ class PyomoModelBuilder:
         self.crude_ids = list(self._yields.keys())
         self.n_periods = len(plan.periods)
 
+        # Optional units — reformer, NHT, splitter
+        reformer_unit = config.units.get("reformer_1")
+        self.has_reformer = reformer_unit is not None
+        self.reformer_capacity = reformer_unit.capacity if reformer_unit else 0.0
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -154,6 +159,8 @@ class PyomoModelBuilder:
         self._add_variables(m)
         self._add_cdu_constraints(m)
         self._add_fcc_constraints(m)
+        if self.has_reformer:
+            self._add_reformer_constraints(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
         self._add_blending_constraints(m)
@@ -211,6 +218,14 @@ class PyomoModelBuilder:
             "fcc_coke_vol", "fcc_c3_vol", "fcc_c4_vol",
         ]:
             setattr(m, var_name, pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0))
+
+        # --- Reformer variables (only if reformer exists in config) ---
+        if self.has_reformer:
+            m.hn_to_reformer = pyo.Var(m.PERIODS, bounds=(0.0, self.reformer_capacity), initialize=0.0)
+            m.reformer_severity = pyo.Var(m.PERIODS, bounds=(90.0, 105.0), initialize=98.0)
+            m.reformate_from_reformer = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.reformer_hydrogen = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.reformer_lpg = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
 
         # Product PRODUCTION volumes (computed from blends and dispositions)
         for var_name in [
@@ -367,6 +382,46 @@ class PyomoModelBuilder:
         m.fcc_air_blower_con = pyo.Constraint(m.PERIODS, rule=air_blower_rule)
 
     # ------------------------------------------------------------------
+    # Reformer constraints (only when reformer exists)
+    # ------------------------------------------------------------------
+
+    def _add_reformer_constraints(self, m: pyo.ConcreteModel) -> None:
+        """Reformer yield equations: HN → reformate + H2 + LPG."""
+        ref_cap = self.reformer_capacity
+
+        # Reformer capacity
+        def ref_cap_rule(m: Any, p: int) -> Any:
+            return m.hn_to_reformer[p] <= ref_cap
+
+        m.reformer_capacity_con = pyo.Constraint(m.PERIODS, rule=ref_cap_rule)
+
+        # Reformate yield: 0.95 - 0.0125 × (severity - 90) (nonlinear in severity)
+        def ref_yield_rule(m: Any, p: int) -> Any:
+            sev = m.reformer_severity[p]
+            yield_frac = 0.95 - 0.0125 * (sev - 90.0)
+            return m.reformate_from_reformer[p] == m.hn_to_reformer[p] * yield_frac
+
+        m.reformer_yield_def = pyo.Constraint(m.PERIODS, rule=ref_yield_rule)
+
+        # Hydrogen yield: 0.03 + 0.001 × (severity - 90)
+        def ref_h2_rule(m: Any, p: int) -> Any:
+            sev = m.reformer_severity[p]
+            h2_frac = 0.03 + 0.001 * (sev - 90.0)
+            return m.reformer_hydrogen[p] == m.hn_to_reformer[p] * h2_frac
+
+        m.reformer_h2_def = pyo.Constraint(m.PERIODS, rule=ref_h2_rule)
+
+        # LPG from mass balance: remainder × 0.6 (rest is fuel gas)
+        def ref_lpg_rule(m: Any, p: int) -> Any:
+            sev = m.reformer_severity[p]
+            yield_frac = 0.95 - 0.0125 * (sev - 90.0)
+            h2_frac = 0.03 + 0.001 * (sev - 90.0)
+            remainder = 1.0 - yield_frac - h2_frac
+            return m.reformer_lpg[p] == m.hn_to_reformer[p] * 0.6 * remainder
+
+        m.reformer_lpg_def = pyo.Constraint(m.PERIODS, rule=ref_lpg_rule)
+
+    # ------------------------------------------------------------------
     # Disposition constraints
     # ------------------------------------------------------------------
 
@@ -377,9 +432,14 @@ class PyomoModelBuilder:
 
         m.ln_disposition = pyo.Constraint(m.PERIODS, rule=ln_disp_rule)
 
-        # CDU heavy naphtha
+        # CDU heavy naphtha — 2 or 3 destinations depending on reformer
+        has_ref = self.has_reformer
+
         def hn_disp_rule(m: Any, p: int) -> Any:
-            return m.hn_to_blend[p] + m.hn_to_sell[p] == self._cdu_cut_volume(m, "heavy_naphtha", p)
+            lhs = m.hn_to_blend[p] + m.hn_to_sell[p]
+            if has_ref:
+                lhs += m.hn_to_reformer[p]
+            return lhs == self._cdu_cut_volume(m, "heavy_naphtha", p)
 
         m.hn_disposition = pyo.Constraint(m.PERIODS, rule=hn_disp_rule)
 
@@ -419,9 +479,11 @@ class PyomoModelBuilder:
     # ------------------------------------------------------------------
 
     def _add_product_volume_constraints(self, m: pyo.ConcreteModel) -> None:
-        # Gasoline = LN_blend + HN_blend + LCN (all) + HCN_blend + NC4_blend + reformate
+        # Gasoline = LN_blend + HN_blend + LCN + HCN_blend + NC4_blend + reformate (purchased + from reformer)
+        has_ref = self.has_reformer
+
         def gasoline_def(m: Any, p: int) -> Any:
-            return m.gasoline_volume[p] == (
+            total = (
                 m.ln_to_blend[p]
                 + m.hn_to_blend[p]
                 + m.fcc_lcn_vol[p]
@@ -429,6 +491,9 @@ class PyomoModelBuilder:
                 + m.nc4_to_blend[p]
                 + m.reformate_purchased[p]
             )
+            if has_ref:
+                total += m.reformate_from_reformer[p]
+            return m.gasoline_volume[p] == total
 
         m.gasoline_def = pyo.Constraint(m.PERIODS, rule=gasoline_def)
 
@@ -458,10 +523,13 @@ class PyomoModelBuilder:
 
         m.fuel_oil_def = pyo.Constraint(m.PERIODS, rule=fuel_oil_def)
 
-        # LPG pool = (1-nc4_frac) × CDU LPG + nc4_to_lpg + FCC C3 + FCC C4
+        # LPG pool = CDU LPG (non-nc4) + nc4_to_lpg + FCC C3/C4 + reformer LPG
         def lpg_def(m: Any, p: int) -> Any:
             cdu_non_nc4 = (1.0 - _NC4_FRACTION_OF_LPG) * self._cdu_cut_volume(m, "lpg", p)
-            return m.lpg_volume[p] == cdu_non_nc4 + m.nc4_to_lpg[p] + m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
+            total = cdu_non_nc4 + m.nc4_to_lpg[p] + m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
+            if has_ref:
+                total += m.reformer_lpg[p]
+            return m.lpg_volume[p] == total
 
         m.lpg_def = pyo.Constraint(m.PERIODS, rule=lpg_def)
 
@@ -509,6 +577,8 @@ class PyomoModelBuilder:
 
         # --- Octane (RON via Blending Index) ---
         # Σ(vol × BI_i) ≥ BI(min_RON) × gasoline_volume
+        has_ref = self.has_reformer
+
         def octane_rule(m: Any, p: int) -> Any:
             ron_min = self._gasoline_spec_value(p, "road_octane", "min")
             bi_min = _bi(ron_min)
@@ -520,6 +590,12 @@ class PyomoModelBuilder:
                 + m.nc4_to_blend[p] * bi["n_butane"]
                 + m.reformate_purchased[p] * bi["reformate"]
             )
+            if has_ref:
+                # Reformer reformate BI is nonlinear in severity:
+                # BI(severity) = _BI_C + _BI_B*sev + _BI_A*sev²
+                sev = m.reformer_severity[p]
+                ref_bi = _BI_C + _BI_B * sev + _BI_A * sev * sev
+                bi_total += m.reformate_from_reformer[p] * ref_bi
             return bi_total >= bi_min * m.gasoline_volume[p]
 
         m.octane_spec = pyo.Constraint(m.PERIODS, rule=octane_rule)
@@ -707,8 +783,16 @@ class PyomoModelBuilder:
                 diesel_ht_cost = m.lco_to_diesel[p] * _DIESEL_HT_COST
                 reformate_cost = m.reformate_purchased[p] * _REFORMATE_PRICE
 
+                # Reformer opex and hydrogen credit (only when reformer exists)
+                reformer_opex = 0.0
+                hydrogen_credit = 0.0
+                if self.has_reformer:
+                    reformer_opex = m.hn_to_reformer[p] * 3.0     # $3/bbl feed
+                    hydrogen_credit = m.reformer_hydrogen[p] * 1.5  # $1.50/MSCF equiv
+
                 margin = (
-                    revenue - crude_cost - cdu_opex - fcc_opex - diesel_ht_cost - reformate_cost
+                    revenue - crude_cost - cdu_opex - fcc_opex - diesel_ht_cost
+                    - reformate_cost - reformer_opex + hydrogen_credit
                 )
 
                 # Period weight by duration (days)

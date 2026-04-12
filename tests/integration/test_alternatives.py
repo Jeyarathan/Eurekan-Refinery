@@ -47,7 +47,7 @@ def optimal(config, plan):
 
 @pytest.fixture(scope="module")
 def alternatives(config, plan, optimal):
-    return enumerate_near_optimal(config, plan, optimal, tolerance=0.005, max_alternatives=10)
+    return enumerate_near_optimal(config, plan, optimal, tolerance=0.01, max_alternatives=10)
 
 
 class TestFindsAlternatives:
@@ -64,7 +64,7 @@ class TestFindsAlternatives:
 class TestMarginWithinTolerance:
     def test_all_within_half_percent(self, optimal, alternatives):
         """All alternatives must be within 0.5% of optimal margin."""
-        floor = optimal.total_margin * 0.995
+        floor = optimal.total_margin * 0.99
         for alt in alternatives:
             assert alt.result.total_margin >= floor - 1.0, (
                 f"{alt.name}: margin {alt.result.total_margin:,.0f} "

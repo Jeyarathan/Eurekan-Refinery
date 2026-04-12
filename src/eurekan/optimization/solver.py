@@ -214,12 +214,25 @@ class EurekanSolver:
             self._set_if_free(model.lco_to_diesel[p], lco_vol)
             self._set_if_free(model.lco_to_fo[p], 0.0)
 
-            # Reformate purchase: small amount to fill octane gap
+            # Reformate: from reformer if present, otherwise purchased
+            reformer_output = 0.0
+            if hasattr(model, "hn_to_reformer"):
+                hn_ref = hn_avail * 0.5
+                self._set_if_free(model.hn_to_reformer[p], hn_ref)
+                self._set_if_free(model.reformer_severity[p], 98.0)
+                ref_yield = 0.95 - 0.0125 * (98 - 90)
+                reformer_output = hn_ref * ref_yield
+                self._set_if_free(model.reformate_from_reformer[p], reformer_output)
+                self._set_if_free(model.reformer_hydrogen[p], hn_ref * 0.038)
+                self._set_if_free(model.reformer_lpg[p], hn_ref * 0.01)
+                hn_avail *= 0.5  # remaining HN for blend/sell
+
             self._set_if_free(model.reformate_purchased[p], 2000.0)
 
             # Product volumes
             gasoline = (
-                ln_avail + hn_avail + lcn_vol + hcn_vol * 0.5 + nc4_avail * 0.5 + 2000.0
+                ln_avail + hn_avail + lcn_vol + hcn_vol * 0.5 + nc4_avail * 0.5
+                + 2000.0 + reformer_output
             )
             naphtha = 0.0
             jet = kero_avail

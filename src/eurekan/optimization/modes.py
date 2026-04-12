@@ -412,11 +412,21 @@ def _build_planning_result(
         if cdu_to_blend > 1.0:
             add_edge("cdu_1", "blend_gasoline", "LN + HN", cdu_to_blend)
 
-        # Reformate → Gasoline Blender
+        # Purchased reformate → Gasoline Blender
         reformate = _safe_value(model.reformate_purchased[p])
         if reformate > 1.0:
             add_node("purchase_reformate", FlowNodeType.PURCHASE, "Reformate", reformate)
             add_edge("purchase_reformate", "blend_gasoline", "Reformate", reformate)
+
+        # Reformer: CDU HN → Reformer → Reformate → Blender
+        if hasattr(model, "hn_to_reformer"):
+            hn_ref = _safe_value(model.hn_to_reformer[p])
+            ref_out = _safe_value(model.reformate_from_reformer[p])
+            if hn_ref > 1.0:
+                add_node("reformer_1", FlowNodeType.UNIT, "Reformer", hn_ref)
+                add_edge("cdu_1", "reformer_1", "Heavy Naphtha", hn_ref)
+                if ref_out > 1.0:
+                    add_edge("reformer_1", "blend_gasoline", "Reformate", ref_out)
 
         # Gasoline Blender → Gasoline sale
         add_node("sale_gasoline", FlowNodeType.SALE_POINT, "Gasoline", gasoline)
