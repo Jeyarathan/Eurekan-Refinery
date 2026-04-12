@@ -16,6 +16,7 @@ near-optimal region that offer different operational characteristics.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Optional
 
 import pyomo.environ as pyo
@@ -221,6 +222,7 @@ def _solve_lexicographic(
     )
     planning_result = _build_planning_result(model, config, plan, solve_info)
     planning_result = planning_result.model_copy(update={
+        "scenario_id": str(uuid.uuid4()),
         "scenario_name": obj_spec["name"],
         "total_margin": actual_margin,
     })
