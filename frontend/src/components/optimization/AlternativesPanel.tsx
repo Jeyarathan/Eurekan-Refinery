@@ -36,7 +36,7 @@ export function AlternativesPanel() {
       const res = await fetch(`${BASE}/ai/alternatives`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenario_id: scenarioId, tolerance: 0.02 }),
+        body: JSON.stringify({ scenario_id: scenarioId, tolerance: 0.005 }),
       })
       if (res.ok) {
         const alts: AltPlan[] = await res.json()

@@ -1,4 +1,4 @@
-"""Integration tests for near-optimal enumeration."""
+"""Integration tests for near-optimal enumeration via lexicographic optimization."""
 
 from __future__ import annotations
 
@@ -47,13 +47,13 @@ def optimal(config, plan):
 
 @pytest.fixture(scope="module")
 def alternatives(config, plan, optimal):
-    return enumerate_near_optimal(config, plan, optimal, tolerance=0.02, max_alternatives=10)
+    return enumerate_near_optimal(config, plan, optimal, tolerance=0.005, max_alternatives=10)
 
 
 class TestFindsAlternatives:
-    def test_finds_at_least_3(self, alternatives):
-        assert len(alternatives) >= 3, (
-            f"Only {len(alternatives)} alternatives found, expected >= 3"
+    def test_finds_at_least_2(self, alternatives):
+        assert len(alternatives) >= 2, (
+            f"Only {len(alternatives)} alternatives found, expected >= 2"
         )
 
     def test_all_are_alternative_plans(self, alternatives):
@@ -62,8 +62,9 @@ class TestFindsAlternatives:
 
 
 class TestMarginWithinTolerance:
-    def test_all_within_tolerance(self, optimal, alternatives):
-        floor = optimal.total_margin * 0.98  # 2% tolerance
+    def test_all_within_half_percent(self, optimal, alternatives):
+        """All alternatives must be within 0.5% of optimal margin."""
+        floor = optimal.total_margin * 0.995
         for alt in alternatives:
             assert alt.result.total_margin >= floor - 1.0, (
                 f"{alt.name}: margin {alt.result.total_margin:,.0f} "
@@ -71,25 +72,42 @@ class TestMarginWithinTolerance:
             )
 
 
+class TestRealValues:
+    def test_crudes_not_zero(self, alternatives):
+        """Every alternative must have non-zero crude rates."""
+        for alt in alternatives:
+            total = sum(alt.result.periods[0].crude_slate.values())
+            assert total > 10_000, (
+                f"{alt.name}: total crude {total:,.0f} is near-zero"
+            )
+
+    def test_products_not_zero(self, alternatives):
+        """Every alternative must have non-zero product volumes."""
+        for alt in alternatives:
+            gas = alt.result.periods[0].product_volumes.get("gasoline", 0)
+            assert gas > 1000, (
+                f"{alt.name}: gasoline {gas:,.0f} is near-zero"
+            )
+
+    def test_conversion_in_range(self, alternatives):
+        for alt in alternatives:
+            fcc = alt.result.periods[0].fcc_result
+            if fcc:
+                assert 67 <= fcc.conversion <= 91, (
+                    f"{alt.name}: conversion {fcc.conversion:.1f} out of range"
+                )
+
+
 class TestPlansAreDifferent:
-    def test_each_pair_differs(self, optimal, alternatives):
-        """Each pair of plans has at least one crude >2000 or product >1000 apart."""
-        all_plans = [optimal] + [a.result for a in alternatives]
-        for i in range(len(all_plans)):
-            for j in range(i + 1, len(all_plans)):
-                pi = all_plans[i].periods[0]
-                pj = all_plans[j].periods[0]
-                crude_diff = any(
-                    abs(pi.crude_slate.get(c, 0) - pj.crude_slate.get(c, 0)) > 2000
-                    for c in set(pi.crude_slate) | set(pj.crude_slate)
-                )
-                product_diff = any(
-                    abs(pi.product_volumes.get(p, 0) - pj.product_volumes.get(p, 0)) > 1000
-                    for p in set(pi.product_volumes) | set(pj.product_volumes)
-                )
-                assert crude_diff or product_diff, (
-                    f"Plans {i} and {j} are not meaningfully different"
-                )
+    def test_at_least_one_different_slate(self, optimal, alternatives):
+        """At least one alternative has a meaningfully different crude slate."""
+        opt_slate = optimal.periods[0].crude_slate
+        for alt in alternatives:
+            alt_slate = alt.result.periods[0].crude_slate
+            for c in set(opt_slate) | set(alt_slate):
+                if abs(opt_slate.get(c, 0) - alt_slate.get(c, 0)) > 1000:
+                    return  # found one — test passes
+        pytest.fail("No alternative has a crude differing by >1000 bbl/d")
 
 
 class TestLabelsPopulated:

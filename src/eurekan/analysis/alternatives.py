@@ -1,17 +1,16 @@
-"""Near-optimal solution enumeration.
+"""Near-optimal solution enumeration via lexicographic optimization.
 
-Explores two axes that planners care about:
+Finds up to 10 alternative plans at essentially the SAME margin as
+the optimal, exploiting the near-optimal feasible region.
 
-  Crude feedstock variations (C1–C5):
-    Lean into main crude, reduce main crude, diversify, simplify, minimize cost.
+Mathematical approach:
+  maximize: original_margin + epsilon * secondary_goal
+  subject to: original_margin >= optimal_margin * (1 - tolerance)
+              all original constraints
 
-  Product volume variations (P1–P5):
-    Max gasoline, max distillate, min fuel oil, max/min FCC conversion.
-
-Each alternative adds a margin-floor constraint to the NLP
-(objective >= optimal * (1 - tolerance)) then re-optimizes with a
-different secondary objective. Only plans that are *meaningfully
-different* from the optimal and from each other are kept.
+With epsilon=0.001 and tolerance=0.005, the primary objective dominates.
+The secondary goal only breaks ties, selecting different vertices of the
+near-optimal region that offer different operational characteristics.
 """
 
 from __future__ import annotations
@@ -30,6 +29,8 @@ from eurekan.optimization.modes import _build_planning_result
 from eurekan.optimization.solver import EurekanSolver, SolveResult
 
 logger = logging.getLogger(__name__)
+
+EPSILON = 0.001  # secondary objective weight — small enough to not move margin
 
 
 class AlternativePlan(BaseModel):
@@ -53,10 +54,10 @@ def enumerate_near_optimal(
     config: RefineryConfig,
     plan: PlanDefinition,
     optimal_result: PlanningResult,
-    tolerance: float = 0.02,
+    tolerance: float = 0.005,
     max_alternatives: int = 10,
 ) -> list[AlternativePlan]:
-    """Find up to *max_alternatives* near-optimal plans."""
+    """Find up to *max_alternatives* plans at essentially the same margin."""
     if not optimal_result.periods or optimal_result.total_margin <= 0:
         return []
 
@@ -64,71 +65,77 @@ def enumerate_near_optimal(
     margin_floor = optimal_margin * (1.0 - tolerance)
     opt_period = optimal_result.periods[0]
     opt_slate = opt_period.crude_slate
-    opt_conv = opt_period.fcc_result.conversion if opt_period.fcc_result else 80.0
     opt_products = opt_period.product_volumes
+    opt_conv = opt_period.fcc_result.conversion if opt_period.fcc_result else 80.0
 
-    # Identify the top crude for C1/C2 objectives
-    sorted_crudes = sorted(opt_slate.items(), key=lambda x: -x[1])
-    top_crude = sorted_crudes[0][0] if sorted_crudes else None
+    # Identify top crudes (those with significant volume in optimal)
+    top_crudes = sorted(
+        [(c, v) for c, v in opt_slate.items() if v > 1000],
+        key=lambda x: -x[1],
+    )
 
-    # Define the exploration objectives
+    # Build the list of secondary objectives to try
     objectives: list[dict[str, Any]] = []
 
-    if top_crude:
+    # Crude-axis: push each significant crude up and down
+    for crude_id, _ in top_crudes[:3]:
         objectives.append({
-            "name": f"Max {top_crude}",
+            "name": f"Max {crude_id}",
             "axis": "crude",
-            "build": lambda m, tc=top_crude: _obj_max_var(m, f"crude_rate[{tc},0]"),
-            "desc_fn": lambda r, tc=top_crude: _describe_crude(r, opt_slate, tc, "max"),
+            "build_secondary": lambda m, c=crude_id: m.crude_rate[c, 0],
+            "sense": pyo.maximize,
+            "desc_fn": lambda r, c=crude_id: _desc_crude(r, opt_slate, c),
         })
         objectives.append({
-            "name": f"Min {top_crude}",
+            "name": f"Min {crude_id}",
             "axis": "crude",
-            "build": lambda m, tc=top_crude: _obj_min_var(m, f"crude_rate[{tc},0]"),
-            "desc_fn": lambda r, tc=top_crude: _describe_crude(r, opt_slate, tc, "min"),
+            "build_secondary": lambda m, c=crude_id: m.crude_rate[c, 0],
+            "sense": pyo.minimize,
+            "desc_fn": lambda r, c=crude_id: _desc_crude(r, opt_slate, c),
         })
 
+    # Crude-axis: minimize concentration (most diversified)
     objectives.append({
         "name": "Most Diversified",
         "axis": "crude",
-        "build": lambda m: _obj_min_concentration(m),
-        "desc_fn": lambda r: _describe_diversity(r, opt_slate),
+        "build_secondary": lambda m: sum(m.crude_rate[c, 0] ** 2 for c in m.CRUDES),
+        "sense": pyo.minimize,
+        "desc_fn": lambda r: _desc_diversity(r, opt_slate),
     })
+
+    # Crude-axis: cheapest slate
     objectives.append({
         "name": "Cheapest Crudes",
         "axis": "crude",
-        "build": lambda m: _obj_min_crude_cost(m, config),
-        "desc_fn": lambda r: _describe_cost(r, opt_period),
+        "build_secondary": lambda m: sum(
+            m.crude_rate[c, 0] * (config.crude_library.get(c).price or 70)
+            for c in m.CRUDES if config.crude_library.get(c)
+        ),
+        "sense": pyo.minimize,
+        "desc_fn": lambda r: _desc_cost(r, opt_period),
     })
+
+    # Product-axis objectives
     objectives.append({
         "name": "Max Gasoline",
         "axis": "product",
-        "build": lambda m: _obj_max_var(m, "gasoline_sales[0]"),
-        "desc_fn": lambda r: _describe_product(r, opt_products, "gasoline", "max"),
+        "build_secondary": lambda m: m.gasoline_sales[0],
+        "sense": pyo.maximize,
+        "desc_fn": lambda r: _desc_product(r, opt_products, "gasoline"),
     })
     objectives.append({
         "name": "Max Distillate",
         "axis": "product",
-        "build": lambda m: _obj_max_distillate(m),
-        "desc_fn": lambda r: _describe_distillate(r, opt_products),
+        "build_secondary": lambda m: m.diesel_sales[0] + m.jet_sales[0],
+        "sense": pyo.maximize,
+        "desc_fn": lambda r: _desc_distillate(r, opt_products),
     })
     objectives.append({
         "name": "Min Fuel Oil",
         "axis": "product",
-        "build": lambda m: _obj_min_var(m, "fuel_oil_sales[0]"),
-        "desc_fn": lambda r: _describe_product(r, opt_products, "fuel_oil", "min"),
-    })
-    objectives.append({
-        "name": "Max Conversion",
-        "axis": "product",
-        "build": lambda m: _obj_max_var(m, "fcc_conversion[0]"),
-        "desc_fn": lambda r: _describe_conversion(r, opt_conv, "max"),
-    })
-    objectives.append({
-        "name": "Min Conversion",
-        "axis": "product",
-        "build": lambda m: _obj_min_var(m, "fcc_conversion[0]"),
-        "desc_fn": lambda r: _describe_conversion(r, opt_conv, "min"),
+        "build_secondary": lambda m: m.fuel_oil_sales[0],
+        "sense": pyo.minimize,
+        "desc_fn": lambda r: _desc_product(r, opt_products, "fuel_oil"),
     })
 
     # Solve each alternative
@@ -139,13 +146,12 @@ def enumerate_near_optimal(
         if len(found) >= max_alternatives:
             break
         try:
-            alt = _solve_alternative(
+            alt = _solve_lexicographic(
                 config, plan, optimal_result, margin_floor,
                 obj_spec, solver,
             )
             if alt is None:
                 continue
-            # Check meaningful difference vs optimal AND all found plans
             if not _is_different(alt.result, optimal_result, found):
                 continue
             found.append(alt)
@@ -157,11 +163,11 @@ def enumerate_near_optimal(
 
 
 # ---------------------------------------------------------------------------
-# Solver core
+# Lexicographic solve
 # ---------------------------------------------------------------------------
 
 
-def _solve_alternative(
+def _solve_lexicographic(
     config: RefineryConfig,
     plan: PlanDefinition,
     optimal_result: PlanningResult,
@@ -169,137 +175,106 @@ def _solve_alternative(
     obj_spec: dict[str, Any],
     solver: EurekanSolver,
 ) -> Optional[AlternativePlan]:
-    """Build model, add margin floor, set alt objective, solve."""
+    """Build model with margin floor + epsilon-weighted secondary objective."""
     builder = PyomoModelBuilder(config, plan)
     model = builder.build()
 
-    # 1. Add margin floor: original objective expression >= floor
-    obj_expr = model.objective.expr
-    model.margin_floor_con = pyo.Constraint(expr=obj_expr >= margin_floor)
+    # The original objective expression (margin to maximize)
+    primary_expr = model.objective.expr
 
-    # 2. Deactivate original objective
+    # 1. Add margin floor constraint
+    model.margin_floor_con = pyo.Constraint(expr=primary_expr >= margin_floor)
+
+    # 2. Build lexicographic objective: primary + epsilon * secondary
     model.objective.deactivate()
+    secondary_expr = obj_spec["build_secondary"](model)
+    alt_sense = obj_spec["sense"]
 
-    # 3. Set alternative objective
-    alt_expr, alt_sense = obj_spec["build"](model)
-    model.alt_objective = pyo.Objective(expr=alt_expr, sense=alt_sense)
+    # Normalize: if maximizing secondary, add it; if minimizing, subtract it
+    if alt_sense == pyo.maximize:
+        combined = primary_expr + EPSILON * secondary_expr
+    else:
+        combined = primary_expr - EPSILON * secondary_expr
 
-    # 4. Warm-start from optimal
-    _warm_start_from_result(model, optimal_result)
+    model.lex_objective = pyo.Objective(expr=combined, sense=pyo.maximize)
 
-    # 5. Solve
+    # 3. Warm-start from optimal
+    _warm_start(model, optimal_result)
+
+    # 4. Solve
     result = solver.solve(model)
     if not result.feasible:
         return None
 
-    # 6. Check margin is actually within tolerance
+    # 5. Check margin is within tolerance
     try:
-        actual_margin = float(pyo.value(obj_expr))
+        actual_margin = float(pyo.value(primary_expr))
     except Exception:
         return None
     if actual_margin < margin_floor - 1.0:
         return None
 
-    # 7. Build PlanningResult
-    fake_solve = SolveResult(
-        status="optimal",
-        objective_value=actual_margin,
-        solve_time=result.solve_time,
-        tier_used=0,
+    # 6. Build PlanningResult from the solved model
+    solve_info = SolveResult(
+        status="optimal", objective_value=actual_margin,
+        solve_time=result.solve_time, tier_used=0,
     )
-    planning_result = _build_planning_result(model, config, plan, fake_solve)
+    planning_result = _build_planning_result(model, config, plan, solve_info)
     planning_result = planning_result.model_copy(update={
         "scenario_name": obj_spec["name"],
         "total_margin": actual_margin,
     })
 
-    # 8. Build comparison vs optimal
-    opt_p = optimal_result.periods[0]
-    alt_p = planning_result.periods[0]
-    comparison = ScenarioComparison(
-        base_scenario_id=optimal_result.scenario_id,
-        comparison_scenario_id=planning_result.scenario_id,
-        margin_delta=actual_margin - optimal_result.total_margin,
-        crude_slate_changes={
-            c: alt_p.crude_slate.get(c, 0) - opt_p.crude_slate.get(c, 0)
-            for c in set(opt_p.crude_slate) | set(alt_p.crude_slate)
-            if abs(alt_p.crude_slate.get(c, 0) - opt_p.crude_slate.get(c, 0)) > 500
-        },
-        conversion_delta=(
-            (alt_p.fcc_result.conversion if alt_p.fcc_result else 0)
-            - (opt_p.fcc_result.conversion if opt_p.fcc_result else 0)
-        ),
-        product_volume_deltas={
-            p: alt_p.product_volumes.get(p, 0) - opt_p.product_volumes.get(p, 0)
-            for p in set(opt_p.product_volumes) | set(alt_p.product_volumes)
-        },
-        key_insight=obj_spec["desc_fn"](planning_result),
-    )
+    # 7. Build comparison vs optimal
+    desc = obj_spec["desc_fn"](planning_result)
+    comparison = _build_comparison(optimal_result, planning_result, desc)
 
     return AlternativePlan(
         name=obj_spec["name"],
-        description=obj_spec["desc_fn"](planning_result),
+        description=desc,
         axis=obj_spec["axis"],
         result=planning_result,
         comparison=comparison,
     )
 
 
-def _warm_start_from_result(model: pyo.ConcreteModel, result: PlanningResult) -> None:
-    """Set model variable values from an existing PlanningResult."""
+def _warm_start(model: pyo.ConcreteModel, result: PlanningResult) -> None:
+    """Set variable values from an existing PlanningResult."""
     p = result.periods[0]
     for c in model.CRUDES:
-        val = p.crude_slate.get(c, 0.0)
         v = model.crude_rate[c, 0]
-        lb = v.lb if v.lb is not None else 0.0
-        ub = v.ub if v.ub is not None else 1e6
-        model.crude_rate[c, 0].set_value(max(lb, min(ub, val)))
-
+        val = max(v.lb or 0, min(v.ub or 1e6, p.crude_slate.get(c, 0)))
+        v.set_value(val)
     if p.fcc_result:
-        conv = max(68.0, min(90.0, p.fcc_result.conversion))
-        model.fcc_conversion[0].set_value(conv)
+        model.fcc_conversion[0].set_value(
+            max(68.0, min(90.0, p.fcc_result.conversion))
+        )
 
 
-# ---------------------------------------------------------------------------
-# Objective builders — each returns (expression, sense)
-# ---------------------------------------------------------------------------
-
-
-def _obj_max_var(model: pyo.ConcreteModel, var_path: str) -> tuple:
-    base, idx = var_path.split("[")
-    idx = idx.rstrip("]")
-    try:
-        idx_val: Any = int(idx)
-    except ValueError:
-        parts = idx.split(",")
-        idx_val = tuple(int(p) if p.strip().isdigit() else p.strip() for p in parts)
-    var = getattr(model, base)
-    return var[idx_val], pyo.maximize
-
-
-def _obj_min_var(model: pyo.ConcreteModel, var_path: str) -> tuple:
-    expr, _ = _obj_max_var(model, var_path)
-    return expr, pyo.minimize
-
-
-def _obj_min_concentration(model: pyo.ConcreteModel) -> tuple:
-    """Minimize Σ rate_c² (proxy for Herfindahl index)."""
-    expr = sum(model.crude_rate[c, 0] ** 2 for c in model.CRUDES)
-    return expr, pyo.minimize
-
-
-def _obj_min_crude_cost(model: pyo.ConcreteModel, config: RefineryConfig) -> tuple:
-    """Minimize Σ(price × rate)."""
-    expr = sum(
-        model.crude_rate[c, 0] * (config.crude_library.get(c).price or 70.0)
-        for c in model.CRUDES
-        if config.crude_library.get(c)
+def _build_comparison(
+    optimal: PlanningResult, alt: PlanningResult, desc: str
+) -> ScenarioComparison:
+    op = optimal.periods[0]
+    ap = alt.periods[0]
+    return ScenarioComparison(
+        base_scenario_id=optimal.scenario_id,
+        comparison_scenario_id=alt.scenario_id,
+        margin_delta=alt.total_margin - optimal.total_margin,
+        crude_slate_changes={
+            c: ap.crude_slate.get(c, 0) - op.crude_slate.get(c, 0)
+            for c in set(op.crude_slate) | set(ap.crude_slate)
+            if abs(ap.crude_slate.get(c, 0) - op.crude_slate.get(c, 0)) > 500
+        },
+        conversion_delta=(
+            (ap.fcc_result.conversion if ap.fcc_result else 0)
+            - (op.fcc_result.conversion if op.fcc_result else 0)
+        ),
+        product_volume_deltas={
+            p: ap.product_volumes.get(p, 0) - op.product_volumes.get(p, 0)
+            for p in set(op.product_volumes) | set(ap.product_volumes)
+        },
+        key_insight=desc,
     )
-    return expr, pyo.minimize
-
-
-def _obj_max_distillate(model: pyo.ConcreteModel) -> tuple:
-    return model.diesel_sales[0] + model.jet_sales[0], pyo.maximize
 
 
 # ---------------------------------------------------------------------------
@@ -312,29 +287,22 @@ def _is_different(
     optimal: PlanningResult,
     existing: list[AlternativePlan],
 ) -> bool:
-    """True if the candidate differs meaningfully from optimal AND all existing."""
     cp = candidate.periods[0]
     op = optimal.periods[0]
-
-    # Must differ from optimal
     if not _slates_differ(cp, op):
         return False
-
-    # Must differ from every existing alternative
     for alt in existing:
-        ap = alt.result.periods[0]
-        if not _slates_differ(cp, ap):
+        if not _slates_differ(cp, alt.result.periods[0]):
             return False
     return True
 
 
-def _slates_differ(a_period, b_period) -> bool:
-    """True if any crude differs by >2000 or any product by >1000."""
-    for c in set(a_period.crude_slate) | set(b_period.crude_slate):
-        if abs(a_period.crude_slate.get(c, 0) - b_period.crude_slate.get(c, 0)) > 2000:
+def _slates_differ(a, b) -> bool:
+    for c in set(a.crude_slate) | set(b.crude_slate):
+        if abs(a.crude_slate.get(c, 0) - b.crude_slate.get(c, 0)) > 1000:
             return True
-    for p in set(a_period.product_volumes) | set(b_period.product_volumes):
-        if abs(a_period.product_volumes.get(p, 0) - b_period.product_volumes.get(p, 0)) > 1000:
+    for p in set(a.product_volumes) | set(b.product_volumes):
+        if abs(a.product_volumes.get(p, 0) - b.product_volumes.get(p, 0)) > 500:
             return True
     return False
 
@@ -344,63 +312,51 @@ def _slates_differ(a_period, b_period) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _describe_crude(result, opt_slate, crude_id, direction):
+def _desc_crude(result, opt_slate, crude_id):
     p = result.periods[0]
-    vol = p.crude_slate.get(crude_id, 0)
-    opt_vol = opt_slate.get(crude_id, 0)
-    delta = vol - opt_vol
-    sign = "+" if delta >= 0 else ""
+    v = p.crude_slate.get(crude_id, 0)
+    ov = opt_slate.get(crude_id, 0)
+    d = v - ov
+    pct = result.total_margin / max(1, result.total_margin) * 100  # placeholder
     return (
-        f"{crude_id} at {vol / 1000:.1f}k bbl/d ({sign}{delta / 1000:.1f}k vs optimal). "
-        f"Margin ${result.total_margin / 1000:.0f}k/d."
+        f"{crude_id} at {v/1000:.1f}k bbl/d ({'+' if d>=0 else ''}{d/1000:.1f}k vs optimal). "
+        f"Margin ${result.total_margin/1000:.0f}k/d."
     )
 
 
-def _describe_diversity(result, opt_slate):
+def _desc_diversity(result, opt_slate):
     p = result.periods[0]
-    n_used = sum(1 for v in p.crude_slate.values() if v > 100)
-    n_opt = sum(1 for v in opt_slate.values() if v > 100)
-    return f"{n_used} crudes used (vs {n_opt} in optimal). Margin ${result.total_margin / 1000:.0f}k/d."
+    n = sum(1 for v in p.crude_slate.values() if v > 100)
+    no = sum(1 for v in opt_slate.values() if v > 100)
+    return f"{n} crudes (vs {no} optimal). Margin ${result.total_margin/1000:.0f}k/d."
 
 
-def _describe_cost(result, opt_period):
+def _desc_cost(result, opt_period):
     return (
-        f"Crude cost ${result.periods[0].crude_cost / 1000:.0f}k/d "
-        f"(vs ${opt_period.crude_cost / 1000:.0f}k/d). "
-        f"Margin ${result.total_margin / 1000:.0f}k/d."
+        f"Crude cost ${result.periods[0].crude_cost/1000:.0f}k/d "
+        f"(vs ${opt_period.crude_cost/1000:.0f}k/d). "
+        f"Margin ${result.total_margin/1000:.0f}k/d."
     )
 
 
-def _describe_product(result, opt_products, product, direction):
+def _desc_product(result, opt_products, product):
     p = result.periods[0]
-    vol = p.product_volumes.get(product, 0)
-    opt_vol = opt_products.get(product, 0)
-    delta = vol - opt_vol
-    sign = "+" if delta >= 0 else ""
+    v = p.product_volumes.get(product, 0)
+    ov = opt_products.get(product, 0)
+    d = v - ov
     return (
-        f"{product.replace('_', ' ').title()} at {vol / 1000:.1f}k bbl/d "
-        f"({sign}{delta / 1000:.1f}k). Margin ${result.total_margin / 1000:.0f}k/d."
+        f"{product.replace('_',' ').title()} {v/1000:.1f}k bbl/d "
+        f"({'+' if d>=0 else ''}{d/1000:.1f}k). "
+        f"Margin ${result.total_margin/1000:.0f}k/d."
     )
 
 
-def _describe_distillate(result, opt_products):
+def _desc_distillate(result, opt_products):
     p = result.periods[0]
     dist = p.product_volumes.get("diesel", 0) + p.product_volumes.get("jet", 0)
-    opt_dist = opt_products.get("diesel", 0) + opt_products.get("jet", 0)
-    delta = dist - opt_dist
-    sign = "+" if delta >= 0 else ""
+    odist = opt_products.get("diesel", 0) + opt_products.get("jet", 0)
+    d = dist - odist
     return (
-        f"Distillate at {dist / 1000:.1f}k bbl/d ({sign}{delta / 1000:.1f}k). "
-        f"Margin ${result.total_margin / 1000:.0f}k/d."
-    )
-
-
-def _describe_conversion(result, opt_conv, direction):
-    p = result.periods[0]
-    conv = p.fcc_result.conversion if p.fcc_result else 0
-    delta = conv - opt_conv
-    sign = "+" if delta >= 0 else ""
-    return (
-        f"Conversion at {conv:.1f}% ({sign}{delta:.1f}%). "
-        f"Margin ${result.total_margin / 1000:.0f}k/d."
+        f"Distillate {dist/1000:.1f}k bbl/d ({'+' if d>=0 else ''}{d/1000:.1f}k). "
+        f"Margin ${result.total_margin/1000:.0f}k/d."
     )

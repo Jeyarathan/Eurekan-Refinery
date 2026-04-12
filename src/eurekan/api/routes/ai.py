@@ -37,7 +37,7 @@ def narrative(request: Request, body: dict[str, Any]) -> SolutionNarrative:
 def alternatives(request: Request, body: dict[str, Any]) -> list[dict[str, Any]]:
     """Enumerate near-optimal plans for a stored scenario."""
     scenario_id = body.get("scenario_id")
-    tolerance = body.get("tolerance", 0.02)
+    tolerance = body.get("tolerance", 0.005)
     if not scenario_id:
         raise HTTPException(status_code=400, detail="scenario_id required")
     service = _service(request)
