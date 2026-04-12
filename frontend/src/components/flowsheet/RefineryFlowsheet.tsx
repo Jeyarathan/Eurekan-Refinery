@@ -11,7 +11,7 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import type { FlowEdge, PlanningResult } from '../../types'
-import { applyDagreLayout } from './layoutUtils'
+import { applyPfdLayout } from './layoutUtils'
 import { PurchaseNode, type PurchaseNodeData } from './PurchaseNode'
 import { ProductNode, type ProductNodeData } from './ProductNode'
 import { StreamEdge, type StreamEdgeData } from './StreamEdge'
@@ -168,8 +168,8 @@ export function RefineryFlowsheet({
         }
       })
 
-    // Apply dagre layout
-    return applyDagreLayout(rfNodes, rfEdges)
+    // Apply PFD boiling-point layout
+    return applyPfdLayout(rfNodes, rfEdges)
   }, [result, showFullDiagram, highlightedNodeId])
 
   const handleNodeClick = useCallback((_: unknown, node: Node) => {
