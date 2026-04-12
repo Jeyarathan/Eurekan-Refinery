@@ -229,10 +229,31 @@ class EurekanSolver:
 
             self._set_if_free(model.reformate_purchased[p], 2000.0)
 
+            # GO HT: send some VGO through hydrotreater
+            if hasattr(model, "vgo_to_goht"):
+                self._set_if_free(model.vgo_to_goht[p], 0.0)
+
+            # Scanfiner: send some HCN through
+            scanfiner_out = 0.0
+            if hasattr(model, "hcn_to_scanfiner"):
+                hcn_scan = hcn_vol * 0.5
+                self._set_if_free(model.hcn_to_scanfiner[p], hcn_scan)
+                scanfiner_out = hcn_scan * 0.98
+                self._set_if_free(model.scanfiner_output[p], scanfiner_out)
+
+            # Alkylation: send some C3/C4
+            alkylate_out = 0.0
+            if hasattr(model, "c3c4_to_alky"):
+                c3c4_alky = (c3_vol + c4_vol) * 0.3
+                self._set_if_free(model.c3c4_to_alky[p], c3c4_alky)
+                alkylate_out = c3c4_alky * 1.75
+                self._set_if_free(model.alkylate_volume[p], alkylate_out)
+                self._set_if_free(model.ic4_purchased[p], c3c4_alky * 1.1)
+
             # Product volumes
             gasoline = (
                 ln_avail + hn_avail + lcn_vol + hcn_vol * 0.5 + nc4_avail * 0.5
-                + 2000.0 + reformer_output
+                + 2000.0 + reformer_output + scanfiner_out + alkylate_out
             )
             naphtha = 0.0
             jet = kero_avail

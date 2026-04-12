@@ -213,6 +213,9 @@ PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     "CAT1": ("cdu_1", UnitType.CDU, "Crude Unit #1"),
     "CCCU": ("fcc_1", UnitType.FCC, "Cat Cracker"),
     "CLPR": ("reformer_1", UnitType.REFORMER, "Catalytic Reformer"),
+    "CGHT": ("goht_1", UnitType.HYDROTREATER, "GO Hydrotreater"),
+    "CGTU": ("scanfiner_1", UnitType.HYDROTREATER, "Scanfiner (FCC Naphtha HT)"),
+    "CSFA": ("alky_1", UnitType.ALKYLATION, "Alkylation Unit"),
 }
 
 # ProcLim tag → (equipment_limit_key, description)

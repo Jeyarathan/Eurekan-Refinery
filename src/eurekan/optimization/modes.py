@@ -428,6 +428,34 @@ def _build_planning_result(
                 if ref_out > 1.0:
                     add_edge("reformer_1", "blend_gasoline", "Reformate", ref_out)
 
+        # Scanfiner: FCC HCN → Scanfiner → treated HCN → Blender
+        if hasattr(model, "hcn_to_scanfiner"):
+            hcn_scan = _safe_value(model.hcn_to_scanfiner[p])
+            scan_out = _safe_value(model.scanfiner_output[p])
+            if hcn_scan > 1.0:
+                add_node("scanfiner_1", FlowNodeType.UNIT, "Scanfiner", hcn_scan)
+                add_edge("fcc_1", "scanfiner_1", "HCN", hcn_scan)
+                if scan_out > 1.0:
+                    add_edge("scanfiner_1", "blend_gasoline", "Treated HCN", scan_out)
+
+        # Alkylation: FCC C3/C4 → Alky → Alkylate → Blender
+        if hasattr(model, "c3c4_to_alky"):
+            c3c4_alky = _safe_value(model.c3c4_to_alky[p])
+            alky_out = _safe_value(model.alkylate_volume[p])
+            if c3c4_alky > 1.0:
+                add_node("alky_1", FlowNodeType.UNIT, "Alkylation", c3c4_alky)
+                add_edge("fcc_1", "alky_1", "C3/C4 olefins", c3c4_alky)
+                if alky_out > 1.0:
+                    add_edge("alky_1", "blend_gasoline", "Alkylate", alky_out)
+
+        # GO HT: VGO → GO HT → treated VGO → FCC
+        if hasattr(model, "vgo_to_goht"):
+            vgo_goht = _safe_value(model.vgo_to_goht[p])
+            if vgo_goht > 1.0:
+                add_node("goht_1", FlowNodeType.UNIT, "GO HT", vgo_goht)
+                add_edge("cdu_1", "goht_1", "VGO", vgo_goht)
+                add_edge("goht_1", "fcc_1", "Treated VGO", vgo_goht * 0.995)
+
         # Gasoline Blender → Gasoline sale
         add_node("sale_gasoline", FlowNodeType.SALE_POINT, "Gasoline", gasoline)
         if gasoline > 1.0:

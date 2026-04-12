@@ -133,10 +133,22 @@ class PyomoModelBuilder:
         self.crude_ids = list(self._yields.keys())
         self.n_periods = len(plan.periods)
 
-        # Optional units — reformer, NHT, splitter
+        # Optional units
         reformer_unit = config.units.get("reformer_1")
         self.has_reformer = reformer_unit is not None
         self.reformer_capacity = reformer_unit.capacity if reformer_unit else 0.0
+
+        goht_unit = config.units.get("goht_1")
+        self.has_goht = goht_unit is not None
+        self.goht_capacity = goht_unit.capacity if goht_unit else 0.0
+
+        scan_unit = config.units.get("scanfiner_1")
+        self.has_scanfiner = scan_unit is not None
+        self.scanfiner_capacity = scan_unit.capacity if scan_unit else 0.0
+
+        alky_unit = config.units.get("alky_1")
+        self.has_alky = alky_unit is not None
+        self.alky_capacity = alky_unit.capacity if alky_unit else 0.0
 
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
@@ -161,6 +173,8 @@ class PyomoModelBuilder:
         self._add_fcc_constraints(m)
         if self.has_reformer:
             self._add_reformer_constraints(m)
+        if self.has_alky:
+            self._add_alkylation_constraints(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
         self._add_blending_constraints(m)
@@ -226,6 +240,21 @@ class PyomoModelBuilder:
             m.reformate_from_reformer = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.reformer_hydrogen = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.reformer_lpg = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- GO HT variables ---
+        if self.has_goht:
+            m.vgo_to_goht = pyo.Var(m.PERIODS, bounds=(0.0, self.goht_capacity), initialize=0.0)
+
+        # --- Scanfiner variables ---
+        if self.has_scanfiner:
+            m.hcn_to_scanfiner = pyo.Var(m.PERIODS, bounds=(0.0, self.scanfiner_capacity), initialize=0.0)
+            m.scanfiner_output = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Alkylation variables ---
+        if self.has_alky:
+            m.c3c4_to_alky = pyo.Var(m.PERIODS, bounds=(0.0, self.alky_capacity), initialize=0.0)
+            m.alkylate_volume = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.ic4_purchased = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
 
         # Product PRODUCTION volumes (computed from blends and dispositions)
         for var_name in [
@@ -422,6 +451,29 @@ class PyomoModelBuilder:
         m.reformer_lpg_def = pyo.Constraint(m.PERIODS, rule=ref_lpg_rule)
 
     # ------------------------------------------------------------------
+    # Alkylation constraints
+    # ------------------------------------------------------------------
+
+    def _add_alkylation_constraints(self, m: pyo.ConcreteModel) -> None:
+        """Alkylation: olefins → alkylate at 1.75× yield, requires iC4."""
+        def alky_yield_rule(m: Any, p: int) -> Any:
+            return m.alkylate_volume[p] == m.c3c4_to_alky[p] * 1.75
+
+        m.alky_yield_def = pyo.Constraint(m.PERIODS, rule=alky_yield_rule)
+
+        # iC4 requirement: 1.1× olefin feed
+        def alky_ic4_rule(m: Any, p: int) -> Any:
+            return m.ic4_purchased[p] >= m.c3c4_to_alky[p] * 1.1
+
+        m.alky_ic4_con = pyo.Constraint(m.PERIODS, rule=alky_ic4_rule)
+
+        # Feed limit: can't send more C3/C4 than FCC produces
+        def alky_feed_rule(m: Any, p: int) -> Any:
+            return m.c3c4_to_alky[p] <= m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
+
+        m.alky_feed_con = pyo.Constraint(m.PERIODS, rule=alky_feed_rule)
+
+    # ------------------------------------------------------------------
     # Disposition constraints
     # ------------------------------------------------------------------
 
@@ -449,9 +501,14 @@ class PyomoModelBuilder:
 
         m.kero_disposition = pyo.Constraint(m.PERIODS, rule=kero_disp_rule)
 
-        # CDU VGO
+        # CDU VGO — 2 or 3 destinations depending on GO HT
+        has_goht = self.has_goht
+
         def vgo_disp_rule(m: Any, p: int) -> Any:
-            return m.vgo_to_fcc[p] + m.vgo_to_fo[p] == self._cdu_cut_volume(m, "vgo", p)
+            lhs = m.vgo_to_fcc[p] + m.vgo_to_fo[p]
+            if has_goht:
+                lhs += m.vgo_to_goht[p]
+            return lhs == self._cdu_cut_volume(m, "vgo", p)
 
         m.vgo_disposition = pyo.Constraint(m.PERIODS, rule=vgo_disp_rule)
 
@@ -462,11 +519,22 @@ class PyomoModelBuilder:
 
         m.nc4_disposition = pyo.Constraint(m.PERIODS, rule=nc4_disp_rule)
 
-        # FCC HCN
+        # FCC HCN — 2 or 3 destinations depending on Scanfiner
+        has_scan = self.has_scanfiner
+
         def hcn_disp_rule(m: Any, p: int) -> Any:
-            return m.hcn_to_blend[p] + m.hcn_to_fo[p] == m.fcc_hcn_vol[p]
+            lhs = m.hcn_to_blend[p] + m.hcn_to_fo[p]
+            if has_scan:
+                lhs += m.hcn_to_scanfiner[p]
+            return lhs == m.fcc_hcn_vol[p]
 
         m.hcn_disposition = pyo.Constraint(m.PERIODS, rule=hcn_disp_rule)
+
+        # Scanfiner output: 98% volume yield
+        if has_scan:
+            def scan_yield_rule(m: Any, p: int) -> Any:
+                return m.scanfiner_output[p] == m.hcn_to_scanfiner[p] * 0.98
+            m.scanfiner_yield_def = pyo.Constraint(m.PERIODS, rule=scan_yield_rule)
 
         # FCC LCO
         def lco_disp_rule(m: Any, p: int) -> Any:
@@ -479,8 +547,10 @@ class PyomoModelBuilder:
     # ------------------------------------------------------------------
 
     def _add_product_volume_constraints(self, m: pyo.ConcreteModel) -> None:
-        # Gasoline = LN_blend + HN_blend + LCN + HCN_blend + NC4_blend + reformate (purchased + from reformer)
+        # Gasoline = LN + HN + LCN + HCN + NC4 + reformate + scanfiner_output + alkylate
         has_ref = self.has_reformer
+        has_scan = self.has_scanfiner
+        has_alky = self.has_alky
 
         def gasoline_def(m: Any, p: int) -> Any:
             total = (
@@ -493,6 +563,10 @@ class PyomoModelBuilder:
             )
             if has_ref:
                 total += m.reformate_from_reformer[p]
+            if has_scan:
+                total += m.scanfiner_output[p]
+            if has_alky:
+                total += m.alkylate_volume[p]
             return m.gasoline_volume[p] == total
 
         m.gasoline_def = pyo.Constraint(m.PERIODS, rule=gasoline_def)
@@ -523,12 +597,14 @@ class PyomoModelBuilder:
 
         m.fuel_oil_def = pyo.Constraint(m.PERIODS, rule=fuel_oil_def)
 
-        # LPG pool = CDU LPG (non-nc4) + nc4_to_lpg + FCC C3/C4 + reformer LPG
+        # LPG pool = CDU LPG + nc4_to_lpg + FCC C3/C4 + reformer LPG - C3/C4 to alky
         def lpg_def(m: Any, p: int) -> Any:
             cdu_non_nc4 = (1.0 - _NC4_FRACTION_OF_LPG) * self._cdu_cut_volume(m, "lpg", p)
             total = cdu_non_nc4 + m.nc4_to_lpg[p] + m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
             if has_ref:
                 total += m.reformer_lpg[p]
+            if has_alky:
+                total -= m.c3c4_to_alky[p]
             return m.lpg_volume[p] == total
 
         m.lpg_def = pyo.Constraint(m.PERIODS, rule=lpg_def)
@@ -783,16 +859,23 @@ class PyomoModelBuilder:
                 diesel_ht_cost = m.lco_to_diesel[p] * _DIESEL_HT_COST
                 reformate_cost = m.reformate_purchased[p] * _REFORMATE_PRICE
 
-                # Reformer opex and hydrogen credit (only when reformer exists)
-                reformer_opex = 0.0
-                hydrogen_credit = 0.0
+                # Optional unit costs
+                extra_opex = 0.0
+                extra_credit = 0.0
                 if self.has_reformer:
-                    reformer_opex = m.hn_to_reformer[p] * 3.0     # $3/bbl feed
-                    hydrogen_credit = m.reformer_hydrogen[p] * 1.5  # $1.50/MSCF equiv
+                    extra_opex += m.hn_to_reformer[p] * 3.0      # $3/bbl reformer feed
+                    extra_credit += m.reformer_hydrogen[p] * 1.5  # $1.50/MSCF H2
+                if self.has_goht:
+                    extra_opex += m.vgo_to_goht[p] * 2.5          # $2.50/bbl GO HT
+                if self.has_scanfiner:
+                    extra_opex += m.hcn_to_scanfiner[p] * 1.5     # $1.50/bbl Scanfiner
+                if self.has_alky:
+                    extra_opex += m.c3c4_to_alky[p] * 4.0         # $4/bbl alky feed
+                    extra_opex += m.ic4_purchased[p] * 50.0       # $50/bbl iC4
 
                 margin = (
                     revenue - crude_cost - cdu_opex - fcc_opex - diesel_ht_cost
-                    - reformate_cost - reformer_opex + hydrogen_credit
+                    - reformate_cost - extra_opex + extra_credit
                 )
 
                 # Period weight by duration (days)
