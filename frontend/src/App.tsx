@@ -8,11 +8,14 @@ import {
 } from 'lucide-react'
 
 import { quickOptimize } from './api/client'
+import { ConstraintPanel } from './components/diagnostics/ConstraintPanel'
 import { RefineryFlowsheet } from './components/flowsheet/RefineryFlowsheet'
+import { ConversionSlider } from './components/optimization/ConversionSlider'
 import { OptimizePanel } from './components/optimization/OptimizePanel'
 import { ResultsSummary } from './components/optimization/ResultsSummary'
 import { ScenarioComparison } from './components/scenarios/ScenarioComparison'
 import { ScenarioTree } from './components/scenarios/ScenarioTree'
+import { CrudeDispositionTable } from './components/streams/CrudeDispositionTable'
 import { useRefineryStore } from './stores/refineryStore'
 import { useScenarioStore } from './stores/scenarioStore'
 
@@ -99,10 +102,13 @@ function App() {
           </ul>
         </nav>
 
-        {/* Results sidebar panel */}
+        {/* Results sidebar panel — scrollable */}
         {activeResult && (
-          <div className="border-t border-slate-200 p-3">
+          <div className="flex-1 overflow-auto border-t border-slate-200 p-3 space-y-3">
             <ResultsSummary result={activeResult} isStale={isStale} />
+            <ConversionSlider />
+            <ConstraintPanel />
+            <CrudeDispositionTable />
           </div>
         )}
 
@@ -146,6 +152,8 @@ function FlowsheetView({
   // All hooks MUST be called before any early returns (Rules of Hooks)
   const activeResult = useRefineryStore((s) => s.activeResult)
   const showFull = useRefineryStore((s) => s.showFullDiagram)
+  const highlightedNodeId = useRefineryStore((s) => s.highlightedNodeId)
+  const setHighlightedNode = useRefineryStore((s) => s.setHighlightedNode)
 
   if (error) {
     return (
@@ -187,7 +195,12 @@ function FlowsheetView({
 
   return (
     <ErrorBoundary>
-      <RefineryFlowsheet result={activeResult} showFullDiagram={showFull} />
+      <RefineryFlowsheet
+        result={activeResult}
+        showFullDiagram={showFull}
+        highlightedNodeId={highlightedNodeId}
+        onNodeClick={setHighlightedNode}
+      />
     </ErrorBoundary>
   )
 }

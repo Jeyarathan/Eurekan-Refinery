@@ -19,12 +19,14 @@ interface RefineryState {
   lastOptimizedAt: Date | null
   lastInputChangedAt: Date | null
   showFullDiagram: boolean
+  highlightedNodeId: string | null
 
   setActiveResult: (result: PlanningResult) => void
   markStale: () => void
   startOptimizing: () => void
   finishOptimizing: (result: PlanningResult) => void
   toggleFullDiagram: () => void
+  setHighlightedNode: (id: string | null) => void
   reset: () => void
 }
 
@@ -36,6 +38,7 @@ export const useRefineryStore = create<RefineryState>((set) => ({
   lastOptimizedAt: null,
   lastInputChangedAt: null,
   showFullDiagram: false,
+  highlightedNodeId: null,
 
   setActiveResult: (result) =>
     set({
@@ -64,6 +67,8 @@ export const useRefineryStore = create<RefineryState>((set) => ({
 
   toggleFullDiagram: () =>
     set((s) => ({ showFullDiagram: !s.showFullDiagram })),
+
+  setHighlightedNode: (id) => set({ highlightedNodeId: id }),
 
   reset: () =>
     set({

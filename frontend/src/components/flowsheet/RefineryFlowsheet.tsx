@@ -52,6 +52,8 @@ const PRODUCT_PRICE_DEFAULTS: Record<string, number> = {
 interface Props {
   result: PlanningResult
   showFullDiagram?: boolean
+  highlightedNodeId?: string | null
+  onNodeClick?: (nodeId: string | null) => void
 }
 
 interface BuiltGraph {
@@ -63,6 +65,7 @@ function buildGraph(
   result: PlanningResult,
   diagnosticsByUnit: Map<string, ConstraintDiagnostic | undefined>,
   showFullDiagram = false,
+  highlightedNodeId: string | null = null,
 ): BuiltGraph {
   const flow = result.material_flow
   const period = result.periods[0]
@@ -188,29 +191,61 @@ function buildGraph(
   const maxVolume = Math.max(...flow.edges.map((e) => e.volume), 1)
   const visibleNodeIds = new Set(nodes.map((n) => n.id))
 
+  // Build set of edges connected to the highlighted node (for stream tracing)
+  const connectedEdgeIds = new Set<string>()
+  if (highlightedNodeId) {
+    // Walk edges: any edge touching the highlighted node, plus edges
+    // reachable downstream or upstream through intermediate nodes
+    const touched = new Set<string>([highlightedNodeId])
+    // Forward pass: source → target
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const e of flow.edges) {
+        if (touched.has(e.source_node) && !touched.has(e.dest_node)) {
+          touched.add(e.dest_node)
+          connectedEdgeIds.add(e.edge_id)
+          changed = true
+        }
+      }
+    }
+    // Also include edges directly touching the highlighted node
+    for (const e of flow.edges) {
+      if (e.source_node === highlightedNodeId || e.dest_node === highlightedNodeId) {
+        connectedEdgeIds.add(e.edge_id)
+      }
+    }
+  }
+
   const edges: Edge[] = flow.edges
     .filter(
       (e: FlowEdge) =>
         visibleNodeIds.has(e.source_node) && visibleNodeIds.has(e.dest_node),
     )
-    .map((flowEdge) => ({
-      id: flowEdge.edge_id,
-      source: flowEdge.source_node,
-      target: flowEdge.dest_node,
-      type: 'stream',
-      data: {
-        volume: flowEdge.volume,
-        maxVolume,
-        economicValue: flowEdge.economic_value,
-        dimmed: showFullDiagram && flowEdge.volume <= 1,
-      } satisfies StreamEdgeData,
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        color: flowEdge.volume <= 1 && showFullDiagram
-          ? 'rgba(148, 163, 184, 0.4)'
-          : 'rgba(79, 70, 229, 0.6)',
-      },
-    }))
+    .map((flowEdge) => {
+      const isTraceDimmed =
+        highlightedNodeId != null && !connectedEdgeIds.has(flowEdge.edge_id)
+      const isDimmed =
+        isTraceDimmed || (showFullDiagram && flowEdge.volume <= 1)
+      return {
+        id: flowEdge.edge_id,
+        source: flowEdge.source_node,
+        target: flowEdge.dest_node,
+        type: 'stream',
+        data: {
+          volume: flowEdge.volume,
+          maxVolume,
+          economicValue: flowEdge.economic_value,
+          dimmed: isDimmed,
+        } satisfies StreamEdgeData,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: isDimmed
+            ? 'rgba(148, 163, 184, 0.4)'
+            : 'rgba(79, 70, 229, 0.6)',
+        },
+      }
+    })
 
   return { nodes, edges }
 }
@@ -231,7 +266,12 @@ function buildGasolineBadges(
   ]
 }
 
-export function RefineryFlowsheet({ result, showFullDiagram = false }: Props) {
+export function RefineryFlowsheet({
+  result,
+  showFullDiagram = false,
+  highlightedNodeId = null,
+  onNodeClick,
+}: Props) {
   // Build a quick map from unit name → diagnostic for binding indicators
   const diagnosticsByUnit = useMemo(() => {
     const map = new Map<string, ConstraintDiagnostic | undefined>()
@@ -248,8 +288,8 @@ export function RefineryFlowsheet({ result, showFullDiagram = false }: Props) {
   }, [result])
 
   const { nodes, edges } = useMemo(
-    () => buildGraph(result, diagnosticsByUnit, showFullDiagram),
-    [result, diagnosticsByUnit, showFullDiagram],
+    () => buildGraph(result, diagnosticsByUnit, showFullDiagram, highlightedNodeId),
+    [result, diagnosticsByUnit, showFullDiagram, highlightedNodeId],
   )
 
   return (
@@ -259,6 +299,8 @@ export function RefineryFlowsheet({ result, showFullDiagram = false }: Props) {
         edges={edges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
+        onNodeClick={(_e, node) => onNodeClick?.(node.id)}
+        onPaneClick={() => onNodeClick?.(null)}
         fitView
         fitViewOptions={{ padding: 0.15 }}
         proOptions={{ hideAttribution: true }}
