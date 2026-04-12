@@ -110,7 +110,6 @@ function App() {
             <ResultsSummary result={activeResult} isStale={isStale} />
             <ConversionSlider />
             <NarrativePanel />
-            <AlternativesPanel />
             <ConstraintPanel />
             <CrudeDispositionTable />
           </div>
@@ -128,13 +127,18 @@ function App() {
           <OptimizePanel />
         </div>
 
-        <main className="flex-1 overflow-hidden bg-slate-50 p-4">
+        <main className="flex-1 overflow-auto bg-slate-50 p-4 space-y-4">
           {activeView === 'flowsheet' && (
-            <FlowsheetView
-              isOptimizing={isOptimizing}
-              error={error}
-              hasResult={activeResult != null}
-            />
+            <>
+              <div className="h-[55vh]">
+                <FlowsheetView
+                  isOptimizing={isOptimizing}
+                  error={error}
+                  hasResult={activeResult != null}
+                />
+              </div>
+              {activeResult && <AlternativesPanel />}
+            </>
           )}
           {activeView === 'scenarios' && <ScenariosView />}
           {activeView === 'oracle' && <ViewPlaceholder view={activeView} />}
