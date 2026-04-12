@@ -63,6 +63,11 @@ def alternatives(request: Request, body: dict[str, Any]) -> list[dict[str, Any]]
     alts = enumerate_near_optimal(
         service.config, plan, scenario, tolerance, max_alternatives=10,
     )
+    # Store each alternative in the scenario store so the frontend
+    # can fetch full details via GET /api/scenarios/{id}
+    for a in alts:
+        service.scenarios[a.result.scenario_id] = a.result
+
     return [
         {
             "name": a.name,
