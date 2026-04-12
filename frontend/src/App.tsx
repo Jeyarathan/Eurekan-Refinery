@@ -15,6 +15,7 @@ import { OptimizePanel } from './components/optimization/OptimizePanel'
 import { ResultsSummary } from './components/optimization/ResultsSummary'
 import { ScenarioComparison } from './components/scenarios/ScenarioComparison'
 import { ScenarioTree } from './components/scenarios/ScenarioTree'
+import { NarrativePanel } from './components/narrative/NarrativePanel'
 import { CrudeDispositionTable } from './components/streams/CrudeDispositionTable'
 import { useRefineryStore } from './stores/refineryStore'
 import { useScenarioStore } from './stores/scenarioStore'
@@ -107,6 +108,7 @@ function App() {
           <div className="flex-1 overflow-auto border-t border-slate-200 p-3 space-y-3">
             <ResultsSummary result={activeResult} isStale={isStale} />
             <ConversionSlider />
+            <NarrativePanel />
             <ConstraintPanel />
             <CrudeDispositionTable />
           </div>

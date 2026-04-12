@@ -20,6 +20,7 @@ from typing import Any, AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from eurekan.api.routes import ai as ai_routes
 from eurekan.api.routes import config as config_routes
 from eurekan.api.routes import optimize as optimize_routes
 from eurekan.api.routes import oracle as oracle_routes
@@ -61,6 +62,7 @@ app.include_router(optimize_routes.router)
 app.include_router(config_routes.router)
 app.include_router(scenario_routes.router)
 app.include_router(oracle_routes.router)
+app.include_router(ai_routes.router)
 
 
 @app.get("/health")
