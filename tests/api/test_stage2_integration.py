@@ -52,9 +52,10 @@ def test_stage2a_full_workflow(client: TestClient):
     assert r3.status_code == 200
     alts = r3.json()
     assert isinstance(alts, list)
-    assert len(alts) >= 1  # at least the optimal itself
-    assert alts[0]["name"] == "Optimal"
+    assert len(alts) >= 1  # at least one near-optimal alternative
     assert alts[0]["margin"] > 0
+    assert "name" in alts[0]
+    assert "description" in alts[0]
 
     # 4. Branch scenario with higher gasoline price
     r4 = client.post(

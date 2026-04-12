@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Request
 from eurekan.ai.narrative import generate_narrative
 from eurekan.analysis.alternatives import enumerate_near_optimal
 from eurekan.api.services import RefineryService
-from eurekan.core.period import PlanDefinition, PeriodData
 from eurekan.core.enums import OperatingMode
+from eurekan.core.period import PeriodData, PlanDefinition
 from eurekan.core.results import SolutionNarrative
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -45,22 +45,37 @@ def alternatives(request: Request, body: dict[str, Any]) -> list[dict[str, Any]]
     if scenario is None:
         raise HTTPException(status_code=404, detail=f"Scenario not found: {scenario_id}")
 
+    # Build the plan definition that matches the service's default pricing
+    crude_prices = {
+        cid: max((service.config.crude_library.get(cid).price or 70.0) - 10.0, 55.0)
+        for cid in service.config.crude_library
+    }
     plan = PlanDefinition(
         periods=[PeriodData(
             period_id=0, duration_hours=24.0,
+            crude_prices=crude_prices,
             product_prices={"gasoline": 95, "diesel": 100, "jet": 100,
                             "naphtha": 60, "fuel_oil": 55, "lpg": 50},
         )],
         mode=OperatingMode.OPTIMIZE,
         scenario_name="Alternatives base",
     )
-    plans = enumerate_near_optimal(service.config, plan, scenario, tolerance)
+    alts = enumerate_near_optimal(
+        service.config, plan, scenario, tolerance, max_alternatives=10,
+    )
     return [
         {
-            "name": p["name"],
-            "margin": p["result"].total_margin,
-            "scenario_id": p["result"].scenario_id,
-            "comparison": p["comparison"].model_dump() if p["comparison"] else None,
+            "name": a.name,
+            "description": a.description,
+            "axis": a.axis,
+            "margin": a.result.total_margin,
+            "margin_pct": (
+                a.result.total_margin / scenario.total_margin * 100
+                if scenario.total_margin > 0
+                else 0
+            ),
+            "scenario_id": a.result.scenario_id,
+            "comparison": a.comparison.model_dump() if a.comparison else None,
         }
-        for p in plans
+        for a in alts
     ]
