@@ -10,7 +10,7 @@ import {
 } from 'recharts'
 import { Loader2 } from 'lucide-react'
 
-import { quickOptimize } from '../../api/client'
+import { optimize } from '../../api/client'
 import { useRefineryStore } from '../../stores/refineryStore'
 
 interface DataPoint {
@@ -19,6 +19,16 @@ interface DataPoint {
 }
 
 const fmtK = (n: number) => `$${(n / 1000).toFixed(0)}k`
+
+// Default profitable prices (must match services.py quick_optimize defaults)
+const DEFAULT_PRICES: Record<string, number> = {
+  gasoline: 95,
+  diesel: 100,
+  jet: 100,
+  naphtha: 60,
+  fuel_oil: 55,
+  lpg: 50,
+}
 
 export function ConversionSlider() {
   const activeResult = useRefineryStore((s) => s.activeResult)
@@ -29,19 +39,27 @@ export function ConversionSlider() {
 
   const currentConv = activeResult?.periods[0]?.fcc_result?.conversion ?? 80
 
-  // Pre-compute margin at 9 conversion points via hybrid-mode API calls
+  // Sync slider to current optimal on first result
+  useEffect(() => {
+    if (activeResult) setSliderVal(Math.round(currentConv))
+  }, [activeResult, currentConv])
+
+  // Pre-compute margin at 3 representative points on first load
   useEffect(() => {
     if (computed.current || !activeResult) return
     computed.current = true
     setLoading(true)
 
-    // Compute 3 representative points to avoid 9 sequential API calls
-    async function quickSweep() {
-      const quickPoints = [72, 80, 88]
+    async function sweep() {
       const points: DataPoint[] = []
-      for (const conv of quickPoints) {
+      for (const conv of [72, 80, 88]) {
         try {
-          const r = await quickOptimize({ scenario_name: `Sweep ${conv}%` })
+          const r = await optimize({
+            mode: 'hybrid',
+            periods: [{ period_id: 0, duration_hours: 24, product_prices: DEFAULT_PRICES }],
+            fixed_variables: { 'fcc_conversion[0]': conv },
+            scenario_name: `Sweep ${conv}%`,
+          })
           points.push({ conversion: conv, margin: r.total_margin })
         } catch {
           points.push({ conversion: conv, margin: 0 })
@@ -51,15 +69,41 @@ export function ConversionSlider() {
       setLoading(false)
     }
 
-    quickSweep()
+    sweep()
   }, [activeResult])
 
-  const handleSliderChange = useCallback(
+  // On slider drag: update display only
+  const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       setSliderVal(parseInt(e.target.value, 10))
     },
     [],
   )
+
+  // On slider release: call API with fixed conversion, update flowsheet
+  const handleRelease = useCallback(async () => {
+    setLoading(true)
+    try {
+      const result = await optimize({
+        mode: 'hybrid',
+        periods: [{ period_id: 0, duration_hours: 24, product_prices: DEFAULT_PRICES }],
+        fixed_variables: { 'fcc_conversion[0]': sliderVal },
+        scenario_name: `Conv ${sliderVal}%`,
+      })
+
+      // Update the flowsheet with the new result
+      useRefineryStore.getState().setActiveResult(result)
+
+      // Add the new data point to the curve (merge + deduplicate + sort)
+      setData((prev) => {
+        const filtered = prev.filter((p) => p.conversion !== sliderVal)
+        return [...filtered, { conversion: sliderVal, margin: result.total_margin }]
+          .sort((a, b) => a.conversion - b.conversion)
+      })
+    } finally {
+      setLoading(false)
+    }
+  }, [sliderVal])
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -109,13 +153,15 @@ export function ConversionSlider() {
           max={90}
           step={1}
           value={sliderVal}
-          onChange={handleSliderChange}
-          className="mt-1 w-full accent-indigo-600"
+          onChange={handleChange}
+          onPointerUp={handleRelease}
+          disabled={loading}
+          className="mt-1 w-full accent-indigo-600 disabled:opacity-50"
         />
       </div>
 
       <p className="mt-2 text-[10px] text-slate-500">
-        Current optimal: {currentConv.toFixed(1)}%. Drag slider to explore.
+        Current: {currentConv.toFixed(1)}%. Release slider to solve at {sliderVal}%.
       </p>
     </div>
   )

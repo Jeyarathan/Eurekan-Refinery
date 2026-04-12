@@ -81,6 +81,15 @@ export function getHealth(): Promise<HealthResponse> {
 // Optimize
 // ---------------------------------------------------------------------------
 
+export function optimize(body: {
+  mode: 'optimize' | 'simulate' | 'hybrid'
+  periods: Array<{ period_id: number; duration_hours: number; product_prices?: Record<string, number>; crude_prices?: Record<string, number> }>
+  fixed_variables?: Record<string, number>
+  scenario_name?: string
+}): Promise<PlanningResult> {
+  return request<PlanningResult>('POST', `${BASE}/optimize`, body)
+}
+
 export function quickOptimize(
   params?: QuickOptimizeRequest,
 ): Promise<PlanningResult> {
