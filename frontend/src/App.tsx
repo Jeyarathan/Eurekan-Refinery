@@ -11,7 +11,10 @@ import { quickOptimize } from './api/client'
 import { RefineryFlowsheet } from './components/flowsheet/RefineryFlowsheet'
 import { OptimizePanel } from './components/optimization/OptimizePanel'
 import { ResultsSummary } from './components/optimization/ResultsSummary'
+import { ScenarioComparison } from './components/scenarios/ScenarioComparison'
+import { ScenarioTree } from './components/scenarios/ScenarioTree'
 import { useRefineryStore } from './stores/refineryStore'
+import { useScenarioStore } from './stores/scenarioStore'
 
 type View = 'flowsheet' | 'scenarios' | 'oracle'
 
@@ -47,6 +50,7 @@ function App() {
     quickOptimize({ scenario_name: 'Initial' })
       .then((result) => {
         useRefineryStore.getState().finishOptimizing(result)
+        useScenarioStore.getState().loadScenarios()
       })
       .catch((e) => {
         useRefineryStore.setState({ isOptimizing: false })
@@ -122,7 +126,8 @@ function App() {
               hasResult={activeResult != null}
             />
           )}
-          {activeView !== 'flowsheet' && <ViewPlaceholder view={activeView} />}
+          {activeView === 'scenarios' && <ScenariosView />}
+          {activeView === 'oracle' && <ViewPlaceholder view={activeView} />}
         </main>
       </div>
     </div>
@@ -184,6 +189,19 @@ function FlowsheetView({
     <ErrorBoundary>
       <RefineryFlowsheet result={activeResult} showFullDiagram={showFull} />
     </ErrorBoundary>
+  )
+}
+
+function ScenariosView() {
+  return (
+    <div className="grid h-full grid-cols-2 gap-4">
+      <div className="overflow-auto rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <ScenarioTree />
+      </div>
+      <div className="overflow-auto rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <ScenarioComparison />
+      </div>
+    </div>
   )
 }
 
