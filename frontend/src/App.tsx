@@ -9,6 +9,7 @@ import {
 
 import { quickOptimize } from './api/client'
 import { ConstraintPanel } from './components/diagnostics/ConstraintPanel'
+import { AlternativesPanel } from './components/optimization/AlternativesPanel'
 import { RefineryFlowsheet } from './components/flowsheet/RefineryFlowsheet'
 import { ConversionSlider } from './components/optimization/ConversionSlider'
 import { OptimizePanel } from './components/optimization/OptimizePanel'
@@ -109,6 +110,7 @@ function App() {
             <ResultsSummary result={activeResult} isStale={isStale} />
             <ConversionSlider />
             <NarrativePanel />
+            <AlternativesPanel />
             <ConstraintPanel />
             <CrudeDispositionTable />
           </div>
