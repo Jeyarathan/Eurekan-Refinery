@@ -216,6 +216,8 @@ PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     "CGHT": ("goht_1", UnitType.HYDROTREATER, "GO Hydrotreater"),
     "CGTU": ("scanfiner_1", UnitType.HYDROTREATER, "Scanfiner (FCC Naphtha HT)"),
     "CSFA": ("alky_1", UnitType.ALKYLATION, "Alkylation Unit"),
+    "CKHT": ("kht_1", UnitType.HYDROTREATER, "Kero Hydrotreater"),
+    "CDHT": ("dht_1", UnitType.HYDROTREATER, "Diesel Hydrotreater"),
 }
 
 # ProcLim tag → (equipment_limit_key, description)

@@ -150,6 +150,14 @@ class PyomoModelBuilder:
         self.has_alky = alky_unit is not None
         self.alky_capacity = alky_unit.capacity if alky_unit else 0.0
 
+        kht_unit = config.units.get("kht_1")
+        self.has_kht = kht_unit is not None
+        self.kht_capacity = kht_unit.capacity if kht_unit else 0.0
+
+        dht_unit = config.units.get("dht_1")
+        self.has_dht = dht_unit is not None
+        self.dht_capacity = dht_unit.capacity if dht_unit else 0.0
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -175,6 +183,7 @@ class PyomoModelBuilder:
             self._add_reformer_constraints(m)
         if self.has_alky:
             self._add_alkylation_constraints(m)
+        self._add_hydrogen_balance(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
         self._add_blending_constraints(m)
@@ -255,6 +264,18 @@ class PyomoModelBuilder:
             m.c3c4_to_alky = pyo.Var(m.PERIODS, bounds=(0.0, self.alky_capacity), initialize=0.0)
             m.alkylate_volume = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.ic4_purchased = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Kero HT variables ---
+        if self.has_kht:
+            m.kero_to_kht = pyo.Var(m.PERIODS, bounds=(0.0, self.kht_capacity), initialize=0.0)
+
+        # --- Diesel HT variables ---
+        if self.has_dht:
+            m.diesel_to_dht = pyo.Var(m.PERIODS, bounds=(0.0, self.dht_capacity), initialize=0.0)
+            m.lco_to_dht = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Hydrogen balance ---
+        m.h2_purchased = pyo.Var(m.PERIODS, bounds=(0.0, 0.15), initialize=0.0)  # MMSCFD
 
         # Product PRODUCTION volumes (computed from blends and dispositions)
         for var_name in [
@@ -474,6 +495,31 @@ class PyomoModelBuilder:
         m.alky_feed_con = pyo.Constraint(m.PERIODS, rule=alky_feed_rule)
 
     # ------------------------------------------------------------------
+    # Hydrogen balance
+    # ------------------------------------------------------------------
+
+    def _add_hydrogen_balance(self, m: pyo.ConcreteModel) -> None:
+        """H2 supply >= H2 demand.  Reformer produces H2; HTs consume it."""
+        def h2_rule(m: Any, p: int) -> Any:
+            supply = m.h2_purchased[p]
+            if self.has_reformer:
+                supply += m.reformer_hydrogen[p]
+
+            demand = 0.0
+            if self.has_goht:
+                demand += m.vgo_to_goht[p] * 1000.0 / 1e6  # 1000 SCFB → MMSCFD
+            if self.has_scanfiner:
+                demand += m.hcn_to_scanfiner[p] * 300.0 / 1e6
+            if self.has_kht:
+                demand += m.kero_to_kht[p] * 600.0 / 1e6
+            if self.has_dht:
+                demand += (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 800.0 / 1e6
+
+            return supply >= demand
+
+        m.h2_balance_con = pyo.Constraint(m.PERIODS, rule=h2_rule)
+
+    # ------------------------------------------------------------------
     # Disposition constraints
     # ------------------------------------------------------------------
 
@@ -495,9 +541,14 @@ class PyomoModelBuilder:
 
         m.hn_disposition = pyo.Constraint(m.PERIODS, rule=hn_disp_rule)
 
-        # CDU kerosene
+        # CDU kerosene — 2 or 3 destinations depending on Kero HT
+        has_kht = self.has_kht
+
         def kero_disp_rule(m: Any, p: int) -> Any:
-            return m.kero_to_jet[p] + m.kero_to_diesel[p] == self._cdu_cut_volume(m, "kerosene", p)
+            lhs = m.kero_to_jet[p] + m.kero_to_diesel[p]
+            if has_kht:
+                lhs += m.kero_to_kht[p]
+            return lhs == self._cdu_cut_volume(m, "kerosene", p)
 
         m.kero_disposition = pyo.Constraint(m.PERIODS, rule=kero_disp_rule)
 
@@ -577,16 +628,26 @@ class PyomoModelBuilder:
 
         m.naphtha_def = pyo.Constraint(m.PERIODS, rule=naphtha_def)
 
-        # Jet = kero_to_jet
+        # Jet = kero_to_jet + kero HT output (if present)
+        has_kht_ = self.has_kht
+
         def jet_def(m: Any, p: int) -> Any:
-            return m.jet_volume[p] == m.kero_to_jet[p]
+            total = m.kero_to_jet[p]
+            if has_kht_:
+                total += m.kero_to_kht[p] * 0.995  # 99.5% vol yield
+            return m.jet_volume[p] == total
 
         m.jet_def = pyo.Constraint(m.PERIODS, rule=jet_def)
 
-        # Diesel pool = CDU diesel + kero_to_diesel + lco_to_diesel
+        # Diesel pool = CDU diesel + kero_to_diesel + lco_to_diesel + DHT output
+        has_dht_ = self.has_dht
+
         def diesel_def(m: Any, p: int) -> Any:
             cdu_diesel = self._cdu_cut_volume(m, "diesel", p)
-            return m.diesel_volume[p] == cdu_diesel + m.kero_to_diesel[p] + m.lco_to_diesel[p]
+            total = cdu_diesel + m.kero_to_diesel[p] + m.lco_to_diesel[p]
+            if has_dht_:
+                total += (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 0.99  # 99% vol yield
+            return m.diesel_volume[p] == total
 
         m.diesel_def = pyo.Constraint(m.PERIODS, rule=diesel_def)
 
@@ -872,6 +933,11 @@ class PyomoModelBuilder:
                 if self.has_alky:
                     extra_opex += m.c3c4_to_alky[p] * 4.0         # $4/bbl alky feed
                     extra_opex += m.ic4_purchased[p] * 50.0       # $50/bbl iC4
+                if self.has_kht:
+                    extra_opex += m.kero_to_kht[p] * 2.0           # $2/bbl kero HT
+                if self.has_dht:
+                    extra_opex += (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 2.5  # $2.50/bbl diesel HT
+                extra_opex += m.h2_purchased[p] * 1500.0           # $1.50/MSCF × 1000
 
                 margin = (
                     revenue - crude_cost - cdu_opex - fcc_opex - diesel_ht_cost

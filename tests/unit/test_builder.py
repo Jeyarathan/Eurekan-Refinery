@@ -177,7 +177,7 @@ class TestVariableCount:
         model = builder.build()
         n_vars = sum(1 for _ in model.component_data_objects(pyo.Var))
         # 34 auxiliary + 2 crude_rate = 36
-        assert n_vars == 36
+        assert n_vars == 37
 
     def test_variable_count_scales_with_crudes(self):
         builder_5 = PyomoModelBuilder(_make_config(5), _make_plan(1))
@@ -192,7 +192,7 @@ class TestVariableCount:
         model = builder.build()
         n_vars = sum(1 for _ in model.component_data_objects(pyo.Var))
         # 34 + 35 = 69
-        assert n_vars == 69
+        assert n_vars == 70
 
 
 class TestConstraintCount:
@@ -215,7 +215,7 @@ class TestConstraintCount:
         builder = PyomoModelBuilder(_make_config(2), _make_plan(1))
         model = builder.build()
         n_cons = sum(1 for _ in model.component_data_objects(pyo.Constraint))
-        assert n_cons == 48
+        assert n_cons == 49
 
     def test_constraints_independent_of_crude_count(self):
         n5 = sum(
@@ -268,14 +268,14 @@ class TestModelBuildsMultiperiod:
         model = builder.build()
         n_vars = sum(1 for _ in model.component_data_objects(pyo.Var))
         # 36 vars per period × 4 periods
-        assert n_vars == 144
+        assert n_vars == 148
 
     def test_4_period_constraint_count(self):
         builder = PyomoModelBuilder(_make_config(2), _make_plan(4))
         model = builder.build()
         n_cons = sum(1 for _ in model.component_data_objects(pyo.Constraint))
         # 48 cons per period × 4 periods
-        assert n_cons == 192
+        assert n_cons == 196
 
     def test_per_period_variables_distinct(self):
         """Each period has its own variable instances."""
