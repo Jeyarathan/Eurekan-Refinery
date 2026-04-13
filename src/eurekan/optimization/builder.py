@@ -889,9 +889,24 @@ class PyomoModelBuilder:
     def _add_demand_constraints(self, m: pyo.ConcreteModel) -> None:
         product_keys = ["gasoline", "naphtha", "jet", "diesel", "fuel_oil", "lpg"]
 
+        # Inherit demand_min from config.products when PeriodData doesn't specify.
+        # Only min_demand (commitments), not max (caps), to avoid breaking scenarios.
+        _PRODUCT_ID_MAP: dict[str, str] = {
+            "jet_fuel": "jet",
+            "regular_gasoline": "gasoline",
+            "ulsd": "diesel",
+        }
+        config_demand_min: dict[str, float] = {}
+        for pid, prod in self.config.products.items():
+            builder_key = _PRODUCT_ID_MAP.get(pid)
+            if builder_key and prod.min_demand > 0:
+                config_demand_min[builder_key] = max(
+                    config_demand_min.get(builder_key, 0.0), prod.min_demand
+                )
+
         def demand_min_rule(m: Any, p: int, prod: str) -> Any:
             period = self.plan.periods[p]
-            min_d = period.demand_min.get(prod, 0.0)
+            min_d = period.demand_min.get(prod, config_demand_min.get(prod, 0.0))
             return getattr(m, f"{prod}_sales")[p] >= min_d
 
         def demand_max_rule(m: Any, p: int, prod: str) -> Any:
