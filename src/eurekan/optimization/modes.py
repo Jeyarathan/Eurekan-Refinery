@@ -461,9 +461,30 @@ def _build_planning_result(
         if gasoline > 1.0:
             add_edge("blend_gasoline", "sale_gasoline", "Gasoline", gasoline)
 
-        # FCC → Diesel (LCO to diesel)
+        # FCC → Diesel (LCO direct to diesel)
         if lco_to_diesel_val > 1.0:
             add_edge("fcc_1", "sale_diesel", "LCO", lco_to_diesel_val)
+
+        # Kero HT: CDU kero → KHT → Jet
+        if hasattr(model, "kero_to_kht"):
+            kero_kht = _safe_value(model.kero_to_kht[p])
+            if kero_kht > 1.0:
+                add_node("kht_1", FlowNodeType.UNIT, "Kero HT", kero_kht)
+                add_edge("cdu_1", "kht_1", "Kerosene", kero_kht)
+                add_edge("kht_1", "sale_jet", "Treated Kero", kero_kht * 0.995)
+
+        # Diesel HT: CDU diesel + LCO → DHT → ULSD
+        if hasattr(model, "diesel_to_dht"):
+            dsl_dht = _safe_value(model.diesel_to_dht[p])
+            lco_dht = _safe_value(model.lco_to_dht[p]) if hasattr(model, "lco_to_dht") else 0
+            dht_feed = dsl_dht + lco_dht
+            if dht_feed > 1.0:
+                add_node("dht_1", FlowNodeType.UNIT, "Diesel HT", dht_feed)
+                if dsl_dht > 1.0:
+                    add_edge("cdu_1", "dht_1", "Diesel", dsl_dht)
+                if lco_dht > 1.0:
+                    add_edge("fcc_1", "dht_1", "LCO to DHT", lco_dht)
+                add_edge("dht_1", "sale_diesel", "ULSD", dht_feed * 0.99)
 
         # FCC → Fuel oil (HCN_to_fo + LCO_to_fo)
         fcc_to_fo = hcn_to_fo + lco_to_fo_val

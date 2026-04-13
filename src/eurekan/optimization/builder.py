@@ -587,11 +587,22 @@ class PyomoModelBuilder:
                 return m.scanfiner_output[p] == m.hcn_to_scanfiner[p] * 0.98
             m.scanfiner_yield_def = pyo.Constraint(m.PERIODS, rule=scan_yield_rule)
 
-        # FCC LCO
+        # FCC LCO — diesel/FO/DHT
+        has_dht = self.has_dht
+
         def lco_disp_rule(m: Any, p: int) -> Any:
-            return m.lco_to_diesel[p] + m.lco_to_fo[p] == m.fcc_lco_vol[p]
+            lhs = m.lco_to_diesel[p] + m.lco_to_fo[p]
+            if has_dht:
+                lhs += m.lco_to_dht[p]
+            return lhs == m.fcc_lco_vol[p]
 
         m.lco_disposition = pyo.Constraint(m.PERIODS, rule=lco_disp_rule)
+
+        # CDU diesel disposition — direct sale or to DHT
+        if has_dht:
+            def diesel_disp_rule(m: Any, p: int) -> Any:
+                return m.diesel_to_dht[p] <= self._cdu_cut_volume(m, "diesel", p)
+            m.diesel_disposition = pyo.Constraint(m.PERIODS, rule=diesel_disp_rule)
 
     # ------------------------------------------------------------------
     # Product volume constraints
@@ -639,14 +650,20 @@ class PyomoModelBuilder:
 
         m.jet_def = pyo.Constraint(m.PERIODS, rule=jet_def)
 
-        # Diesel pool = CDU diesel + kero_to_diesel + lco_to_diesel + DHT output
+        # Diesel pool:
+        #   CDU diesel NOT sent to DHT (i.e. cdu_diesel - diesel_to_dht) goes direct
+        #   + kero_to_diesel (direct) + lco_to_diesel (direct)
+        #   + DHT output (diesel_to_dht + lco_to_dht) × 99% yield
         has_dht_ = self.has_dht
 
         def diesel_def(m: Any, p: int) -> Any:
             cdu_diesel = self._cdu_cut_volume(m, "diesel", p)
-            total = cdu_diesel + m.kero_to_diesel[p] + m.lco_to_diesel[p]
             if has_dht_:
-                total += (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 0.99  # 99% vol yield
+                diesel_direct = cdu_diesel - m.diesel_to_dht[p]
+                dht_output = (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 0.99
+                total = diesel_direct + m.kero_to_diesel[p] + m.lco_to_diesel[p] + dht_output
+            else:
+                total = cdu_diesel + m.kero_to_diesel[p] + m.lco_to_diesel[p]
             return m.diesel_volume[p] == total
 
         m.diesel_def = pyo.Constraint(m.PERIODS, rule=diesel_def)

@@ -42,9 +42,12 @@ const CDU_PORT_FOR_TARGET: Record<string, string> = {
   sale_fuel_oil: 'resid',
   blend_gasoline: 'ln',     // LN+HN to blend
   fcc_1: 'vgo',
+  goht_1: 'vgo',
   reformer_1: 'hn',
   splitter_1: 'hn',
   nht_1: 'hn',
+  kht_1: 'kero',
+  dht_1: 'diesel',
   kero_ht_1: 'kero',
   diesel_ht_1: 'diesel',
 }
@@ -78,14 +81,14 @@ function nodePosition(id: string, nodeType: string, pIdx: number, pCount: number
   if (id === 'reformer_1') return { x: X_LANE_END, y: Y_NAPHTHA }
 
   // FCC lane
-  if (id.includes('go_ht')) return { x: X_LANE_START, y: Y_FCC }
+  if (id === 'goht_1' || id.includes('go_ht')) return { x: X_LANE_START, y: Y_FCC }
   if (id === 'fcc_1') return { x: X_LANE_MID, y: Y_FCC }
-  if (id.includes('scanfin')) return { x: X_LANE_END, y: Y_FCC }
-  if (id.includes('alky')) return { x: X_LANE_END, y: Y_FCC - 60 }
+  if (id === 'scanfiner_1' || id.includes('scanfin')) return { x: X_LANE_END, y: Y_FCC }
+  if (id === 'alky_1' || id.includes('alky')) return { x: X_LANE_END, y: Y_FCC - 60 }
 
   // Distillate lane
-  if (id.includes('kero_ht')) return { x: X_LANE_START, y: Y_DISTILLATE - 30 }
-  if (id.includes('diesel_ht')) return { x: X_LANE_START, y: Y_DISTILLATE + 30 }
+  if (id === 'kht_1' || id.includes('kero_ht')) return { x: X_LANE_START, y: Y_DISTILLATE - 30 }
+  if (id === 'dht_1' || id.includes('diesel_ht')) return { x: X_LANE_MID, y: Y_DISTILLATE + 10 }
 
   // Blender
   if (id.includes('blend')) return { x: X_BLEND, y: (Y_NAPHTHA + Y_FCC) / 2 }
