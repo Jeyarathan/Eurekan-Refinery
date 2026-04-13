@@ -475,6 +475,23 @@ def _build_planning_result(
         if fcc_to_lpg > 1.0 and lpg > 1.0:
             add_edge("fcc_1", "sale_lpg", "C3 + C4", fcc_to_lpg)
 
+        # Always add nodes for configured units (even if idle at throughput=0)
+        # so the "Full Diagram" toggle can show the refinery structure.
+        for uid, uconf in config.units.items():
+            if uid not in flow_node_ids:
+                display = uconf.unit_id.replace("_", " ").title()
+                if "goht" in uid:
+                    display = "GO HT"
+                elif "scanfiner" in uid:
+                    display = "Scanfiner"
+                elif "alky" in uid:
+                    display = "Alkylation"
+                elif "reformer" in uid:
+                    display = "Reformer"
+                elif "nht" in uid:
+                    display = "Naphtha HT"
+                add_node(uid, FlowNodeType.UNIT, display, 0.0)
+
         # CDU dispositions in CDU yields (cuts)
         cdu_cuts = {
             "light_naphtha": _safe_value(model.ln_to_blend[p]) + _safe_value(model.ln_to_sell[p]),
