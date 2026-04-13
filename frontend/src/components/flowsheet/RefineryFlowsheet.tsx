@@ -197,16 +197,20 @@ export function RefineryFlowsheet({
         maxZoom={2}
       >
         <Background gap={24} size={1} color="#f1f5f9" />
-        <Controls position="bottom-right" showInteractive={false} />
+        <Controls position="bottom-right" showZoom showFitView showInteractive={false} />
         <MiniMap
-          position="bottom-right"
-          style={{ bottom: 50, width: 150, height: 100 }}
+          position="bottom-left"
+          style={{ width: 180, height: 120 }}
+          pannable
+          zoomable
           nodeColor={(n) =>
             n.type === 'purchase' ? '#fbbf24'
-            : n.type === 'unit' ? '#6366f1'
-            : '#10b981'
+            : n.type === 'cdu' ? '#6366f1'
+            : n.type === 'unit' ? '#818cf8'
+            : n.type === 'product' ? '#10b981'
+            : '#94a3b8'
           }
-          maskColor="rgba(241,245,249,0.7)"
+          maskColor="rgba(241,245,249,0.6)"
         />
       </ReactFlow>
     </div>

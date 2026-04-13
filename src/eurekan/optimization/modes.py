@@ -509,6 +509,10 @@ def _build_planning_result(
                     display = "Alkylation"
                 elif "reformer" in uid:
                     display = "Reformer"
+                elif uid == "kht_1":
+                    display = "Kero HT"
+                elif uid == "dht_1":
+                    display = "Diesel HT"
                 elif "nht" in uid:
                     display = "Naphtha HT"
                 add_node(uid, FlowNodeType.UNIT, display, 0.0)

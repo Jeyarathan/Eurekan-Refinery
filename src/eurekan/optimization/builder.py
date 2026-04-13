@@ -541,14 +541,16 @@ class PyomoModelBuilder:
 
         m.hn_disposition = pyo.Constraint(m.PERIODS, rule=hn_disp_rule)
 
-        # CDU kerosene — 2 or 3 destinations depending on Kero HT
+        # CDU kerosene
+        # When Kero HT exists: kerosene for jet MUST go through KHT (mandatory).
+        # kero_to_jet is still used for the non-KHT path (direct jet sale when no KHT).
         has_kht = self.has_kht
 
         def kero_disp_rule(m: Any, p: int) -> Any:
-            lhs = m.kero_to_jet[p] + m.kero_to_diesel[p]
             if has_kht:
-                lhs += m.kero_to_kht[p]
-            return lhs == self._cdu_cut_volume(m, "kerosene", p)
+                # All kero goes to KHT (for jet) or to diesel pool
+                return m.kero_to_kht[p] + m.kero_to_diesel[p] == self._cdu_cut_volume(m, "kerosene", p)
+            return m.kero_to_jet[p] + m.kero_to_diesel[p] == self._cdu_cut_volume(m, "kerosene", p)
 
         m.kero_disposition = pyo.Constraint(m.PERIODS, rule=kero_disp_rule)
 
@@ -598,10 +600,10 @@ class PyomoModelBuilder:
 
         m.lco_disposition = pyo.Constraint(m.PERIODS, rule=lco_disp_rule)
 
-        # CDU diesel disposition — direct sale or to DHT
+        # CDU diesel disposition — when DHT exists, ALL CDU diesel → DHT (mandatory)
         if has_dht:
             def diesel_disp_rule(m: Any, p: int) -> Any:
-                return m.diesel_to_dht[p] <= self._cdu_cut_volume(m, "diesel", p)
+                return m.diesel_to_dht[p] == self._cdu_cut_volume(m, "diesel", p)
             m.diesel_disposition = pyo.Constraint(m.PERIODS, rule=diesel_disp_rule)
 
     # ------------------------------------------------------------------
@@ -639,31 +641,32 @@ class PyomoModelBuilder:
 
         m.naphtha_def = pyo.Constraint(m.PERIODS, rule=naphtha_def)
 
-        # Jet = kero_to_jet + kero HT output (if present)
+        # Jet: when KHT exists, ALL jet comes from KHT (mandatory).
+        # When no KHT, jet = direct kero_to_jet.
         has_kht_ = self.has_kht
 
         def jet_def(m: Any, p: int) -> Any:
-            total = m.kero_to_jet[p]
             if has_kht_:
-                total += m.kero_to_kht[p] * 0.995  # 99.5% vol yield
-            return m.jet_volume[p] == total
+                return m.jet_volume[p] == m.kero_to_kht[p] * 0.995
+            return m.jet_volume[p] == m.kero_to_jet[p]
 
         m.jet_def = pyo.Constraint(m.PERIODS, rule=jet_def)
 
         # Diesel pool:
-        #   CDU diesel NOT sent to DHT (i.e. cdu_diesel - diesel_to_dht) goes direct
-        #   + kero_to_diesel (direct) + lco_to_diesel (direct)
-        #   + DHT output (diesel_to_dht + lco_to_dht) × 99% yield
+        # When DHT exists: ALL diesel must go through DHT (mandatory for ULSD spec).
+        #   Feed to DHT = diesel_to_dht + lco_to_dht + kero_to_diesel
+        #   Diesel volume = DHT output × 99% yield
+        # When no DHT: direct CDU diesel + kero_to_diesel + lco_to_diesel.
         has_dht_ = self.has_dht
 
         def diesel_def(m: Any, p: int) -> Any:
-            cdu_diesel = self._cdu_cut_volume(m, "diesel", p)
             if has_dht_:
-                diesel_direct = cdu_diesel - m.diesel_to_dht[p]
                 dht_output = (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 0.99
-                total = diesel_direct + m.kero_to_diesel[p] + m.lco_to_diesel[p] + dht_output
-            else:
-                total = cdu_diesel + m.kero_to_diesel[p] + m.lco_to_diesel[p]
+                # kero_to_diesel bypasses DHT (it's a lighter cut, lower sulfur)
+                total = dht_output + m.kero_to_diesel[p]
+                return m.diesel_volume[p] == total
+            cdu_diesel = self._cdu_cut_volume(m, "diesel", p)
+            total = cdu_diesel + m.kero_to_diesel[p] + m.lco_to_diesel[p]
             return m.diesel_volume[p] == total
 
         m.diesel_def = pyo.Constraint(m.PERIODS, rule=diesel_def)
