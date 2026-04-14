@@ -492,6 +492,28 @@ def _build_planning_result(
                     add_edge("coker_1", "dht_1", "Coker GO", coker_go_dht)
                 add_edge("dht_1", "sale_diesel", "ULSD", dht_feed * 0.99)
 
+        # Hydrocracker: VGO → HCU → jet + diesel + naphtha + LPG + unconverted
+        if hasattr(model, "vgo_to_hcu"):
+            vgo_hcu = _safe_value(model.vgo_to_hcu[p])
+            if vgo_hcu > 1.0:
+                add_node("hcu_1", FlowNodeType.UNIT, "Hydrocracker", vgo_hcu)
+                add_edge("cdu_1", "hcu_1", "VGO", vgo_hcu)
+                hcu_naph = _safe_value(model.hcu_naphtha_vol[p])
+                hcu_jet = _safe_value(model.hcu_jet_vol[p])
+                hcu_dsl = _safe_value(model.hcu_diesel_vol[p])
+                hcu_lpg = _safe_value(model.hcu_lpg_vol[p])
+                hcu_unc = _safe_value(model.hcu_unconverted_vol[p])
+                if hcu_jet > 1.0:
+                    add_edge("hcu_1", "sale_jet", "HCU Jet", hcu_jet)
+                if hcu_dsl > 1.0:
+                    add_edge("hcu_1", "sale_diesel", "HCU Diesel", hcu_dsl)
+                if hcu_naph > 1.0:
+                    add_edge("hcu_1", "sale_naphtha", "HCU Naphtha", hcu_naph)
+                if hcu_lpg > 1.0:
+                    add_edge("hcu_1", "sale_lpg", "HCU LPG", hcu_lpg)
+                if hcu_unc > 1.0:
+                    add_edge("hcu_1", "sale_fuel_oil", "Unconverted", hcu_unc)
+
         # Vacuum unit: CDU vac_resid → Vacuum → LVGO + HVGO + vac_resid
         if hasattr(model, "vac_feed"):
             vac_feed = _safe_value(model.vac_feed[p])
@@ -566,6 +588,8 @@ def _build_planning_result(
                     display = "Vacuum Unit"
                 elif "coker" in uid:
                     display = "Coker"
+                elif uid == "hcu_1" or "hcu" in uid:
+                    display = "Hydrocracker"
                 add_node(uid, FlowNodeType.UNIT, display, 0.0)
 
         # CDU dispositions in CDU yields (cuts)

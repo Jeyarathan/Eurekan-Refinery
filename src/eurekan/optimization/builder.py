@@ -59,6 +59,7 @@ _VACUUM_OPEX = 1.0    # $/bbl vacuum unit feed
 _COKER_OPEX = 4.0     # $/bbl coker feed (high energy)
 _COKE_PRICE = 60.0    # $/ton fuel-grade petroleum coke (typical Gulf Coast)
 _BBL_TO_TON_COKE = 0.157  # bbl coke -> metric tons
+_HCU_OPEX = 5.0       # $/bbl hydrocracker feed (high-pressure operation)
 
 # Vacuum unit yield fractions (LVGO + HVGO + VR = 1.0)
 _VAC_LVGO_FRAC = 0.25
@@ -184,6 +185,11 @@ class PyomoModelBuilder:
         self.has_coker = coker_unit is not None
         self.coker_capacity = coker_unit.capacity if coker_unit else 0.0
 
+        # Sprint 13: Hydrocracker
+        hcu_unit = config.units.get("hcu_1")
+        self.has_hcu = hcu_unit is not None
+        self.hcu_capacity = hcu_unit.capacity if hcu_unit else 0.0
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -213,6 +219,8 @@ class PyomoModelBuilder:
             self._add_vacuum_constraints(m)
         if self.has_coker:
             self._add_coker_constraints(m)
+        if self.has_hcu:
+            self._add_hcu_constraints(m)
         self._add_hydrogen_balance(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
@@ -312,6 +320,17 @@ class PyomoModelBuilder:
             m.vacuum_hvgo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.vacuum_vr_to_coker = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.vacuum_vr_to_fo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Hydrocracker variables (Sprint 13) ---
+        # HCU feeds on VGO (alternative to FCC). Products: jet, diesel, naphtha, LPG.
+        if self.has_hcu:
+            m.vgo_to_hcu = pyo.Var(m.PERIODS, bounds=(0.0, self.hcu_capacity), initialize=0.0)
+            m.hcu_conversion = pyo.Var(m.PERIODS, bounds=(60.0, 95.0), initialize=80.0)
+            m.hcu_naphtha_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.hcu_jet_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.hcu_diesel_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.hcu_lpg_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.hcu_unconverted_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
 
         # --- Coker variables (Sprint 12) ---
         if self.has_coker:
@@ -632,6 +651,60 @@ class PyomoModelBuilder:
             m.coker_go_no_dht_con = pyo.Constraint(m.PERIODS, rule=coker_go_no_dht_rule)
 
     # ------------------------------------------------------------------
+    # Hydrocracker constraints (Sprint 13)
+    # ------------------------------------------------------------------
+
+    def _add_hcu_constraints(self, m: pyo.ConcreteModel) -> None:
+        """HCU yield equations: VGO -> naphtha + jet + diesel + LPG + unconverted.
+
+        Yields are NONLINEAR (bilinear in feed x conversion-dependent share).
+        Shares (sum to 1.0 at any conversion):
+          naphtha_share  = 0.25 + 0.002 * (conv - 80)
+          jet_share      = 0.32 - 0.001 * (conv - 80)
+          diesel_share   = 0.35 - 0.0005 * (conv - 80)
+          lpg_share      = 0.08 - 0.0005 * (conv - 80)
+          unconv         = (100 - conv) / 100
+        """
+        hcu_cap = self.hcu_capacity
+
+        def hcu_cap_rule(m: Any, p: int) -> Any:
+            return m.vgo_to_hcu[p] <= hcu_cap
+        m.hcu_capacity_con = pyo.Constraint(m.PERIODS, rule=hcu_cap_rule)
+
+        def hcu_naphtha_rule(m: Any, p: int) -> Any:
+            delta = m.hcu_conversion[p] - 80.0
+            share = 0.25 + 0.002 * delta
+            conv_frac = m.hcu_conversion[p] / 100.0
+            return m.hcu_naphtha_vol[p] == m.vgo_to_hcu[p] * share * conv_frac
+        m.hcu_naphtha_def = pyo.Constraint(m.PERIODS, rule=hcu_naphtha_rule)
+
+        def hcu_jet_rule(m: Any, p: int) -> Any:
+            delta = m.hcu_conversion[p] - 80.0
+            share = 0.32 - 0.001 * delta
+            conv_frac = m.hcu_conversion[p] / 100.0
+            return m.hcu_jet_vol[p] == m.vgo_to_hcu[p] * share * conv_frac
+        m.hcu_jet_def = pyo.Constraint(m.PERIODS, rule=hcu_jet_rule)
+
+        def hcu_diesel_rule(m: Any, p: int) -> Any:
+            delta = m.hcu_conversion[p] - 80.0
+            share = 0.35 - 0.0005 * delta
+            conv_frac = m.hcu_conversion[p] / 100.0
+            return m.hcu_diesel_vol[p] == m.vgo_to_hcu[p] * share * conv_frac
+        m.hcu_diesel_def = pyo.Constraint(m.PERIODS, rule=hcu_diesel_rule)
+
+        def hcu_lpg_rule(m: Any, p: int) -> Any:
+            delta = m.hcu_conversion[p] - 80.0
+            share = 0.08 - 0.0005 * delta
+            conv_frac = m.hcu_conversion[p] / 100.0
+            return m.hcu_lpg_vol[p] == m.vgo_to_hcu[p] * share * conv_frac
+        m.hcu_lpg_def = pyo.Constraint(m.PERIODS, rule=hcu_lpg_rule)
+
+        def hcu_unconv_rule(m: Any, p: int) -> Any:
+            unconv_frac = (100.0 - m.hcu_conversion[p]) / 100.0
+            return m.hcu_unconverted_vol[p] == m.vgo_to_hcu[p] * unconv_frac
+        m.hcu_unconverted_def = pyo.Constraint(m.PERIODS, rule=hcu_unconv_rule)
+
+    # ------------------------------------------------------------------
     # Hydrogen balance
     # ------------------------------------------------------------------
 
@@ -657,6 +730,10 @@ class PyomoModelBuilder:
             # Coker naphtha needs NHT - dirty stream, ~1500 SCFB (5x normal naphtha)
             if self.has_coker:
                 demand += m.coker_naphtha_vol[p] * 1500.0 / 1e6
+            # Hydrocracker - biggest consumer, 1500-2550 SCFB depending on conversion
+            if self.has_hcu:
+                hcu_scfb = 1500.0 + 30.0 * (m.hcu_conversion[p] - 60.0)
+                demand += m.vgo_to_hcu[p] * hcu_scfb / 1e6
 
             return supply >= demand
 
@@ -697,15 +774,18 @@ class PyomoModelBuilder:
 
         m.kero_disposition = pyo.Constraint(m.PERIODS, rule=kero_disp_rule)
 
-        # CDU VGO — 2 or 3 destinations depending on GO HT.
+        # CDU VGO — multiple destinations: FCC, GO HT, HCU, fuel oil.
         # When vacuum unit exists, vacuum LVGO + HVGO add to the available VGO pool.
         has_goht = self.has_goht
         has_vac = self.has_vacuum
+        has_hcu = self.has_hcu
 
         def vgo_disp_rule(m: Any, p: int) -> Any:
             lhs = m.vgo_to_fcc[p] + m.vgo_to_fo[p]
             if has_goht:
                 lhs += m.vgo_to_goht[p]
+            if has_hcu:
+                lhs += m.vgo_to_hcu[p]
             rhs = self._cdu_cut_volume(m, "vgo", p)
             if has_vac:
                 # Vacuum unit recovers VGO from heavy bottoms
@@ -793,25 +873,34 @@ class PyomoModelBuilder:
 
         m.gasoline_def = pyo.Constraint(m.PERIODS, rule=gasoline_def)
 
-        # Naphtha sales = LN_sell + HN_sell + coker_naphtha (Sprint 12: dirty naphtha sale)
+        # Naphtha sales = LN_sell + HN_sell + coker_naphtha + hcu_naphtha
+        # (HCU naphtha is clean but low RON, sold as surplus naphtha)
         has_coker = self.has_coker
+        has_hcu_n = self.has_hcu
 
         def naphtha_def(m: Any, p: int) -> Any:
             total = m.ln_to_sell[p] + m.hn_to_sell[p]
             if has_coker:
                 total += m.coker_naphtha_vol[p]
+            if has_hcu_n:
+                total += m.hcu_naphtha_vol[p]
             return m.naphtha_volume[p] == total
 
         m.naphtha_def = pyo.Constraint(m.PERIODS, rule=naphtha_def)
 
-        # Jet: when KHT exists, ALL jet comes from KHT (mandatory).
-        # When no KHT, jet = direct kero_to_jet.
+        # Jet: when KHT exists, ALL CDU jet comes from KHT (mandatory).
+        # HCU jet bypasses KHT (already meets specs without HT).
         has_kht_ = self.has_kht
+        has_hcu_ = self.has_hcu
 
         def jet_def(m: Any, p: int) -> Any:
             if has_kht_:
-                return m.jet_volume[p] == m.kero_to_kht[p] * 0.995
-            return m.jet_volume[p] == m.kero_to_jet[p]
+                total = m.kero_to_kht[p] * 0.995
+            else:
+                total = m.kero_to_jet[p]
+            if has_hcu_:
+                total += m.hcu_jet_vol[p]
+            return m.jet_volume[p] == total
 
         m.jet_def = pyo.Constraint(m.PERIODS, rule=jet_def)
 
@@ -823,6 +912,7 @@ class PyomoModelBuilder:
         has_dht_ = self.has_dht
 
         has_coker_d = self.has_coker
+        has_hcu_d = self.has_hcu
 
         def diesel_def(m: Any, p: int) -> Any:
             if has_dht_:
@@ -832,17 +922,21 @@ class PyomoModelBuilder:
                 dht_output = dht_feed * 0.99
                 # kero_to_diesel bypasses DHT (it's a lighter cut, lower sulfur)
                 total = dht_output + m.kero_to_diesel[p]
-                return m.diesel_volume[p] == total
-            cdu_diesel = self._cdu_cut_volume(m, "diesel", p)
-            total = cdu_diesel + m.kero_to_diesel[p] + m.lco_to_diesel[p]
+            else:
+                cdu_diesel = self._cdu_cut_volume(m, "diesel", p)
+                total = cdu_diesel + m.kero_to_diesel[p] + m.lco_to_diesel[p]
+            # HCU diesel bypasses DHT (already cetane 55+, ultra-low sulfur)
+            if has_hcu_d:
+                total += m.hcu_diesel_vol[p]
             return m.diesel_volume[p] == total
 
         m.diesel_def = pyo.Constraint(m.PERIODS, rule=diesel_def)
 
         # Fuel oil pool = vgo_to_fo + hcn_to_fo + lco_to_fo + (CDU vac_resid bypass)
-        # + vacuum_vr_to_fo + coker_hgo + coker_go_to_fo
+        # + vacuum_vr_to_fo + coker_hgo + coker_go_to_fo + hcu_unconverted
         has_vac_ = self.has_vacuum
         has_coker_ = self.has_coker
+        has_hcu_f = self.has_hcu
 
         def fuel_oil_def(m: Any, p: int) -> Any:
             cdu_vresid = self._cdu_cut_volume(m, "vacuum_residue", p)
@@ -858,16 +952,24 @@ class PyomoModelBuilder:
                 total += m.vacuum_vr_to_fo[p]
             if has_coker_:
                 total += m.coker_hgo_vol[p] + m.coker_go_to_fo[p]
+            if has_hcu_f:
+                # HCU unconverted oil goes to fuel oil (no recycle loop modeled)
+                total += m.hcu_unconverted_vol[p]
             return m.fuel_oil_volume[p] == total
 
         m.fuel_oil_def = pyo.Constraint(m.PERIODS, rule=fuel_oil_def)
 
-        # LPG pool = CDU LPG + nc4_to_lpg + FCC C3/C4 + reformer LPG - C3/C4 to alky
+        # LPG pool = CDU LPG + nc4_to_lpg + FCC C3/C4 + reformer LPG + HCU LPG
+        # - C3/C4 to alky
+        has_hcu_l = self.has_hcu
+
         def lpg_def(m: Any, p: int) -> Any:
             cdu_non_nc4 = (1.0 - _NC4_FRACTION_OF_LPG) * self._cdu_cut_volume(m, "lpg", p)
             total = cdu_non_nc4 + m.nc4_to_lpg[p] + m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
             if has_ref:
                 total += m.reformer_lpg[p]
+            if has_hcu_l:
+                total += m.hcu_lpg_vol[p]
             if has_alky:
                 total -= m.c3c4_to_alky[p]
             return m.lpg_volume[p] == total
@@ -1167,6 +1269,8 @@ class PyomoModelBuilder:
                     extra_opex += m.coker_naphtha_vol[p] * 2.0
                     # Coke revenue: bbl -> tons -> $
                     extra_credit += m.coker_coke_vol[p] * _BBL_TO_TON_COKE * _COKE_PRICE
+                if self.has_hcu:
+                    extra_opex += m.vgo_to_hcu[p] * _HCU_OPEX
                 extra_opex += m.h2_purchased[p] * 1500.0           # $1.50/MSCF × 1000
 
                 margin = (

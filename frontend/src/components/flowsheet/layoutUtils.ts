@@ -20,17 +20,18 @@ const X_PRODUCT = 1140   // product sale nodes
 const Y_LPG = 0
 const Y_NAPHTHA = 140
 const Y_FCC = 320
-const Y_DISTILLATE = 500
-const Y_HEAVY_END = 660  // Vacuum unit + Coker
-const Y_BOTTOMS = 820
+const Y_HCU = 430        // Hydrocracker lane (between FCC and Distillate)
+const Y_DISTILLATE = 540
+const Y_HEAVY_END = 700  // Vacuum unit + Coker
+const Y_BOTTOMS = 860
 
 // Product Y by boiling point (aligned with source lane)
 const PRODUCT_Y: Record<string, number> = {
   sale_lpg: Y_LPG,
   sale_gasoline: Y_NAPHTHA + 20,
   sale_naphtha: Y_NAPHTHA + 80,
-  sale_jet: Y_DISTILLATE - 40,
-  sale_diesel: Y_DISTILLATE + 40,
+  sale_jet: Y_DISTILLATE - 20,
+  sale_diesel: Y_DISTILLATE + 60,
   sale_fuel_oil: Y_BOTTOMS,
   sale_coke: Y_HEAVY_END + 40,
 }
@@ -45,6 +46,7 @@ const CDU_PORT_FOR_TARGET: Record<string, string> = {
   blend_gasoline: 'ln',     // LN+HN to blend
   fcc_1: 'vgo',
   goht_1: 'vgo',
+  hcu_1: 'vgo',
   reformer_1: 'hn',
   splitter_1: 'hn',
   nht_1: 'hn',
@@ -64,7 +66,8 @@ export interface SwimLaneDef {
 export const SWIM_LANE_DEFS: SwimLaneDef[] = [
   { id: 'lane_naphtha', label: 'Naphtha Processing', color: '#e3f2fd', y: Y_NAPHTHA - 35, height: 110 },
   { id: 'lane_fcc', label: 'FCC Complex', color: '#f3e5f5', y: Y_FCC - 35, height: 110 },
-  { id: 'lane_distillate', label: 'Distillate', color: '#e8f5e9', y: Y_DISTILLATE - 55, height: 130 },
+  { id: 'lane_hcu', label: 'Hydrocracking', color: '#ede7f6', y: Y_HCU - 35, height: 90 },
+  { id: 'lane_distillate', label: 'Distillate', color: '#e8f5e9', y: Y_DISTILLATE - 35, height: 110 },
   { id: 'lane_heavy_end', label: 'Heavy End', color: '#fbe9e7', y: Y_HEAVY_END - 35, height: 110 },
 ]
 
@@ -91,9 +94,12 @@ function nodePosition(id: string, nodeType: string, pIdx: number, pCount: number
   if (id === 'scanfiner_1' || id.includes('scanfin')) return { x: X_LANE_END, y: Y_FCC }
   if (id === 'alky_1' || id.includes('alky')) return { x: X_LANE_END, y: Y_FCC - 60 }
 
+  // Hydrocracking lane
+  if (id === 'hcu_1' || id.includes('hcu')) return { x: X_LANE_MID, y: Y_HCU }
+
   // Distillate lane
-  if (id === 'kht_1' || id.includes('kero_ht')) return { x: X_LANE_START, y: Y_DISTILLATE - 30 }
-  if (id === 'dht_1' || id.includes('diesel_ht')) return { x: X_LANE_MID, y: Y_DISTILLATE + 10 }
+  if (id === 'kht_1' || id.includes('kero_ht')) return { x: X_LANE_START, y: Y_DISTILLATE - 20 }
+  if (id === 'dht_1' || id.includes('diesel_ht')) return { x: X_LANE_MID, y: Y_DISTILLATE + 20 }
 
   // Heavy End lane
   if (id === 'vacuum_1' || id.includes('vacuum')) return { x: X_LANE_START, y: Y_HEAVY_END }

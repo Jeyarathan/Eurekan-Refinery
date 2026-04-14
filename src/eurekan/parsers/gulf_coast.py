@@ -221,6 +221,8 @@ PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     # Sprint 12: Vacuum unit + Delayed coker
     "CVT1": ("vacuum_1", UnitType.VACUUM, "Vacuum Distillation Unit"),
     "CDLC": ("coker_1", UnitType.COKER, "Delayed Coker"),
+    # Sprint 13: Hydrocracker
+    "CHCU": ("hcu_1", UnitType.HYDROCRACKER, "Hydrocracker"),
 }
 
 # ProcLim tag → (equipment_limit_key, description)
