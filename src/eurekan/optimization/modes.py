@@ -477,14 +477,61 @@ def _build_planning_result(
         if hasattr(model, "diesel_to_dht"):
             dsl_dht = _safe_value(model.diesel_to_dht[p])
             lco_dht = _safe_value(model.lco_to_dht[p]) if hasattr(model, "lco_to_dht") else 0
-            dht_feed = dsl_dht + lco_dht
+            coker_go_dht = (
+                _safe_value(model.coker_go_to_dht[p])
+                if hasattr(model, "coker_go_to_dht") else 0
+            )
+            dht_feed = dsl_dht + lco_dht + coker_go_dht
             if dht_feed > 1.0:
                 add_node("dht_1", FlowNodeType.UNIT, "Diesel HT", dht_feed)
                 if dsl_dht > 1.0:
                     add_edge("cdu_1", "dht_1", "Diesel", dsl_dht)
                 if lco_dht > 1.0:
                     add_edge("fcc_1", "dht_1", "LCO to DHT", lco_dht)
+                if coker_go_dht > 1.0:
+                    add_edge("coker_1", "dht_1", "Coker GO", coker_go_dht)
                 add_edge("dht_1", "sale_diesel", "ULSD", dht_feed * 0.99)
+
+        # Vacuum unit: CDU vac_resid → Vacuum → LVGO + HVGO + vac_resid
+        if hasattr(model, "vac_feed"):
+            vac_feed = _safe_value(model.vac_feed[p])
+            if vac_feed > 1.0:
+                add_node("vacuum_1", FlowNodeType.UNIT, "Vacuum Unit", vac_feed)
+                add_edge("cdu_1", "vacuum_1", "Atm Resid", vac_feed)
+                lvgo = _safe_value(model.vacuum_lvgo[p])
+                hvgo = _safe_value(model.vacuum_hvgo[p])
+                vgo_total = lvgo + hvgo
+                if vgo_total > 1.0:
+                    add_edge("vacuum_1", "fcc_1", "Vacuum VGO", vgo_total)
+                vr_to_fo = _safe_value(model.vacuum_vr_to_fo[p])
+                if vr_to_fo > 1.0:
+                    add_edge("vacuum_1", "sale_fuel_oil", "Vac Resid", vr_to_fo)
+
+        # Coker: vacuum residue → Coker → naphtha + GO + HGO + coke
+        if hasattr(model, "coker_feed"):
+            coker_feed = _safe_value(model.coker_feed[p])
+            if coker_feed > 1.0:
+                add_node("coker_1", FlowNodeType.UNIT, "Coker", coker_feed)
+                # Feed source
+                if hasattr(model, "vacuum_vr_to_coker"):
+                    vr_coke = _safe_value(model.vacuum_vr_to_coker[p])
+                    if vr_coke > 1.0:
+                        add_edge("vacuum_1", "coker_1", "Vac Resid", vr_coke)
+                else:
+                    add_edge("cdu_1", "coker_1", "Vac Resid", coker_feed)
+                # Products
+                ck_naph = _safe_value(model.coker_naphtha_vol[p])
+                if ck_naph > 1.0:
+                    add_edge("coker_1", "sale_naphtha", "Coker Naphtha", ck_naph)
+                ck_go_fo = _safe_value(model.coker_go_to_fo[p])
+                ck_hgo = _safe_value(model.coker_hgo_vol[p])
+                if ck_go_fo + ck_hgo > 1.0:
+                    add_edge("coker_1", "sale_fuel_oil", "Coker GO + HGO", ck_go_fo + ck_hgo)
+                # Coke as a sale point
+                ck_coke = _safe_value(model.coker_coke_vol[p])
+                if ck_coke > 1.0:
+                    add_node("sale_coke", FlowNodeType.SALE_POINT, "Petroleum Coke", ck_coke)
+                    add_edge("coker_1", "sale_coke", "Coke", ck_coke)
 
         # FCC → Fuel oil (HCN_to_fo + LCO_to_fo)
         fcc_to_fo = hcn_to_fo + lco_to_fo_val
@@ -515,6 +562,10 @@ def _build_planning_result(
                     display = "Diesel HT"
                 elif "nht" in uid:
                     display = "Naphtha HT"
+                elif "vacuum" in uid:
+                    display = "Vacuum Unit"
+                elif "coker" in uid:
+                    display = "Coker"
                 add_node(uid, FlowNodeType.UNIT, display, 0.0)
 
         # CDU dispositions in CDU yields (cuts)

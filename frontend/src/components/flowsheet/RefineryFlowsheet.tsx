@@ -85,6 +85,7 @@ export function RefineryFlowsheet({
           binding: false,
           nodeCategory: 'unit',
           areaColor: isFCC ? AREA_COLORS.fcc : isReformer ? AREA_COLORS.reformer : AREA_COLORS.unit,
+          dimmed: fn.throughput <= 1,
         }
       } else if (fn.node_type === 'blend_header') {
         data = {

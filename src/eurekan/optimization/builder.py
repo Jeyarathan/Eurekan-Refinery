@@ -55,6 +55,23 @@ _REFORMATE_PRICE = 70.0
 _CDU_OPEX = 1.0
 _FCC_OPEX = 1.5
 _DIESEL_HT_COST = 2.0
+_VACUUM_OPEX = 1.0    # $/bbl vacuum unit feed
+_COKER_OPEX = 4.0     # $/bbl coker feed (high energy)
+_COKE_PRICE = 60.0    # $/ton fuel-grade petroleum coke (typical Gulf Coast)
+_BBL_TO_TON_COKE = 0.157  # bbl coke -> metric tons
+
+# Vacuum unit yield fractions (LVGO + HVGO + VR = 1.0)
+_VAC_LVGO_FRAC = 0.25
+_VAC_HVGO_FRAC = 0.25
+_VAC_VR_FRAC = 0.50
+
+# Coker yield fractions (typical heavy vacuum residue, api~10, ccr~12)
+# Sums to ~1.0 (mass balance). HGO is the remainder.
+_COKER_NAPHTHA_FRAC = 0.13
+_COKER_GO_FRAC = 0.265
+_COKER_COKE_FRAC = 0.41
+_COKER_GAS_FRAC = 0.105
+_COKER_HGO_FRAC = max(0.0, 1.0 - _COKER_NAPHTHA_FRAC - _COKER_GO_FRAC - _COKER_COKE_FRAC - _COKER_GAS_FRAC)
 
 # Blend component properties — used by the gasoline blender
 _BLEND_COMPONENT_PROPS: dict[str, dict[str, float]] = {
@@ -158,6 +175,15 @@ class PyomoModelBuilder:
         self.has_dht = dht_unit is not None
         self.dht_capacity = dht_unit.capacity if dht_unit else 0.0
 
+        # Sprint 12: Vacuum unit + Delayed coker
+        vacuum_unit = config.units.get("vacuum_1")
+        self.has_vacuum = vacuum_unit is not None
+        self.vacuum_capacity = vacuum_unit.capacity if vacuum_unit else 0.0
+
+        coker_unit = config.units.get("coker_1")
+        self.has_coker = coker_unit is not None
+        self.coker_capacity = coker_unit.capacity if coker_unit else 0.0
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -183,6 +209,10 @@ class PyomoModelBuilder:
             self._add_reformer_constraints(m)
         if self.has_alky:
             self._add_alkylation_constraints(m)
+        if self.has_vacuum:
+            self._add_vacuum_constraints(m)
+        if self.has_coker:
+            self._add_coker_constraints(m)
         self._add_hydrogen_balance(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
@@ -273,6 +303,27 @@ class PyomoModelBuilder:
         if self.has_dht:
             m.diesel_to_dht = pyo.Var(m.PERIODS, bounds=(0.0, self.dht_capacity), initialize=0.0)
             m.lco_to_dht = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Vacuum unit variables (Sprint 12) ---
+        # Feed: CDU vacuum_residue cut. Splits into LVGO + HVGO + heavy vacuum residue.
+        if self.has_vacuum:
+            m.vac_feed = pyo.Var(m.PERIODS, bounds=(0.0, self.vacuum_capacity), initialize=0.0)
+            m.vacuum_lvgo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.vacuum_hvgo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.vacuum_vr_to_coker = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.vacuum_vr_to_fo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Coker variables (Sprint 12) ---
+        if self.has_coker:
+            m.coker_feed = pyo.Var(m.PERIODS, bounds=(0.0, self.coker_capacity), initialize=0.0)
+            m.coker_naphtha_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.coker_go_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.coker_hgo_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.coker_coke_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.coker_gas_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            # Routing: coker GO can go to DHT or fuel oil
+            m.coker_go_to_dht = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.coker_go_to_fo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
 
         # --- Hydrogen balance ---
         m.h2_purchased = pyo.Var(m.PERIODS, bounds=(0.0, 0.15), initialize=0.0)  # MMSCFD
@@ -495,6 +546,92 @@ class PyomoModelBuilder:
         m.alky_feed_con = pyo.Constraint(m.PERIODS, rule=alky_feed_rule)
 
     # ------------------------------------------------------------------
+    # Vacuum unit constraints (Sprint 12)
+    # ------------------------------------------------------------------
+
+    def _add_vacuum_constraints(self, m: pyo.ConcreteModel) -> None:
+        """Vacuum unit yields: feed -> LVGO + HVGO + vacuum residue."""
+        vac_cap = self.vacuum_capacity
+
+        def vac_cap_rule(m: Any, p: int) -> Any:
+            return m.vac_feed[p] <= vac_cap
+        m.vacuum_capacity_con = pyo.Constraint(m.PERIODS, rule=vac_cap_rule)
+
+        def vac_lvgo_rule(m: Any, p: int) -> Any:
+            return m.vacuum_lvgo[p] == m.vac_feed[p] * _VAC_LVGO_FRAC
+        m.vacuum_lvgo_def = pyo.Constraint(m.PERIODS, rule=vac_lvgo_rule)
+
+        def vac_hvgo_rule(m: Any, p: int) -> Any:
+            return m.vacuum_hvgo[p] == m.vac_feed[p] * _VAC_HVGO_FRAC
+        m.vacuum_hvgo_def = pyo.Constraint(m.PERIODS, rule=vac_hvgo_rule)
+
+        # Vacuum residue split: to coker or to fuel oil
+        def vac_vr_disp_rule(m: Any, p: int) -> Any:
+            return m.vacuum_vr_to_coker[p] + m.vacuum_vr_to_fo[p] == m.vac_feed[p] * _VAC_VR_FRAC
+        m.vacuum_vr_disposition = pyo.Constraint(m.PERIODS, rule=vac_vr_disp_rule)
+
+        # When no coker, force vacuum_vr_to_coker == 0 (no destination)
+        if not self.has_coker:
+            def no_coker_rule(m: Any, p: int) -> Any:
+                return m.vacuum_vr_to_coker[p] == 0.0
+            m.vacuum_vr_no_coker_con = pyo.Constraint(m.PERIODS, rule=no_coker_rule)
+
+    # ------------------------------------------------------------------
+    # Coker constraints (Sprint 12)
+    # ------------------------------------------------------------------
+
+    def _add_coker_constraints(self, m: pyo.ConcreteModel) -> None:
+        """Coker yield equations: vac residue -> naphtha + GO + HGO + coke + gas."""
+        coker_cap = self.coker_capacity
+        has_vacuum = self.has_vacuum
+
+        def coker_cap_rule(m: Any, p: int) -> Any:
+            return m.coker_feed[p] <= coker_cap
+        m.coker_capacity_con = pyo.Constraint(m.PERIODS, rule=coker_cap_rule)
+
+        # Coker feed = either vacuum unit residue (preferred) or CDU vac_resid directly
+        def coker_feed_source_rule(m: Any, p: int) -> Any:
+            if has_vacuum:
+                return m.coker_feed[p] == m.vacuum_vr_to_coker[p]
+            # Without vacuum unit, coker takes from CDU vacuum_residue cut directly
+            return m.coker_feed[p] <= self._cdu_cut_volume(m, "vacuum_residue", p)
+        m.coker_feed_source_con = pyo.Constraint(m.PERIODS, rule=coker_feed_source_rule)
+
+        # Yield definitions (linear in feed)
+        def coker_naphtha_rule(m: Any, p: int) -> Any:
+            return m.coker_naphtha_vol[p] == m.coker_feed[p] * _COKER_NAPHTHA_FRAC
+        m.coker_naphtha_def = pyo.Constraint(m.PERIODS, rule=coker_naphtha_rule)
+
+        def coker_go_rule(m: Any, p: int) -> Any:
+            return m.coker_go_vol[p] == m.coker_feed[p] * _COKER_GO_FRAC
+        m.coker_go_def = pyo.Constraint(m.PERIODS, rule=coker_go_rule)
+
+        def coker_hgo_rule(m: Any, p: int) -> Any:
+            return m.coker_hgo_vol[p] == m.coker_feed[p] * _COKER_HGO_FRAC
+        m.coker_hgo_def = pyo.Constraint(m.PERIODS, rule=coker_hgo_rule)
+
+        def coker_coke_rule(m: Any, p: int) -> Any:
+            return m.coker_coke_vol[p] == m.coker_feed[p] * _COKER_COKE_FRAC
+        m.coker_coke_def = pyo.Constraint(m.PERIODS, rule=coker_coke_rule)
+
+        def coker_gas_rule(m: Any, p: int) -> Any:
+            return m.coker_gas_vol[p] == m.coker_feed[p] * _COKER_GAS_FRAC
+        m.coker_gas_def = pyo.Constraint(m.PERIODS, rule=coker_gas_rule)
+
+        # Coker GO disposition: to DHT (if exists) or to fuel oil.
+        # When no DHT, force coker_go_to_dht == 0 (only fuel oil path available).
+        has_dht_local = self.has_dht
+
+        def coker_go_disp_rule(m: Any, p: int) -> Any:
+            return m.coker_go_to_dht[p] + m.coker_go_to_fo[p] == m.coker_go_vol[p]
+        m.coker_go_disposition = pyo.Constraint(m.PERIODS, rule=coker_go_disp_rule)
+
+        if not has_dht_local:
+            def coker_go_no_dht_rule(m: Any, p: int) -> Any:
+                return m.coker_go_to_dht[p] == 0.0
+            m.coker_go_no_dht_con = pyo.Constraint(m.PERIODS, rule=coker_go_no_dht_rule)
+
+    # ------------------------------------------------------------------
     # Hydrogen balance
     # ------------------------------------------------------------------
 
@@ -513,7 +650,13 @@ class PyomoModelBuilder:
             if self.has_kht:
                 demand += m.kero_to_kht[p] * 600.0 / 1e6
             if self.has_dht:
-                demand += (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 800.0 / 1e6
+                dht_feed = m.diesel_to_dht[p] + m.lco_to_dht[p]
+                if self.has_coker:
+                    dht_feed += m.coker_go_to_dht[p]
+                demand += dht_feed * 800.0 / 1e6
+            # Coker naphtha needs NHT - dirty stream, ~1500 SCFB (5x normal naphtha)
+            if self.has_coker:
+                demand += m.coker_naphtha_vol[p] * 1500.0 / 1e6
 
             return supply >= demand
 
@@ -554,14 +697,20 @@ class PyomoModelBuilder:
 
         m.kero_disposition = pyo.Constraint(m.PERIODS, rule=kero_disp_rule)
 
-        # CDU VGO — 2 or 3 destinations depending on GO HT
+        # CDU VGO — 2 or 3 destinations depending on GO HT.
+        # When vacuum unit exists, vacuum LVGO + HVGO add to the available VGO pool.
         has_goht = self.has_goht
+        has_vac = self.has_vacuum
 
         def vgo_disp_rule(m: Any, p: int) -> Any:
             lhs = m.vgo_to_fcc[p] + m.vgo_to_fo[p]
             if has_goht:
                 lhs += m.vgo_to_goht[p]
-            return lhs == self._cdu_cut_volume(m, "vgo", p)
+            rhs = self._cdu_cut_volume(m, "vgo", p)
+            if has_vac:
+                # Vacuum unit recovers VGO from heavy bottoms
+                rhs += m.vac_feed[p] * (_VAC_LVGO_FRAC + _VAC_HVGO_FRAC)
+            return lhs == rhs
 
         m.vgo_disposition = pyo.Constraint(m.PERIODS, rule=vgo_disp_rule)
 
@@ -606,6 +755,15 @@ class PyomoModelBuilder:
                 return m.diesel_to_dht[p] == self._cdu_cut_volume(m, "diesel", p)
             m.diesel_disposition = pyo.Constraint(m.PERIODS, rule=diesel_disp_rule)
 
+        # CDU vacuum residue disposition (Sprint 12)
+        # Without vacuum unit: all CDU vac_resid → fuel oil (handled in fuel_oil_def).
+        # With vacuum unit: vac_resid splits between vacuum unit feed and fuel oil bypass.
+        if self.has_vacuum:
+            def vac_resid_disp_rule(m: Any, p: int) -> Any:
+                # vac_feed comes from CDU vacuum_residue (with optional fuel oil bypass)
+                return m.vac_feed[p] <= self._cdu_cut_volume(m, "vacuum_residue", p)
+            m.vac_resid_disposition = pyo.Constraint(m.PERIODS, rule=vac_resid_disp_rule)
+
     # ------------------------------------------------------------------
     # Product volume constraints
     # ------------------------------------------------------------------
@@ -635,9 +793,14 @@ class PyomoModelBuilder:
 
         m.gasoline_def = pyo.Constraint(m.PERIODS, rule=gasoline_def)
 
-        # Naphtha sales = LN_sell + HN_sell
+        # Naphtha sales = LN_sell + HN_sell + coker_naphtha (Sprint 12: dirty naphtha sale)
+        has_coker = self.has_coker
+
         def naphtha_def(m: Any, p: int) -> Any:
-            return m.naphtha_volume[p] == m.ln_to_sell[p] + m.hn_to_sell[p]
+            total = m.ln_to_sell[p] + m.hn_to_sell[p]
+            if has_coker:
+                total += m.coker_naphtha_vol[p]
+            return m.naphtha_volume[p] == total
 
         m.naphtha_def = pyo.Constraint(m.PERIODS, rule=naphtha_def)
 
@@ -659,9 +822,14 @@ class PyomoModelBuilder:
         # When no DHT: direct CDU diesel + kero_to_diesel + lco_to_diesel.
         has_dht_ = self.has_dht
 
+        has_coker_d = self.has_coker
+
         def diesel_def(m: Any, p: int) -> Any:
             if has_dht_:
-                dht_output = (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 0.99
+                dht_feed = m.diesel_to_dht[p] + m.lco_to_dht[p]
+                if has_coker_d:
+                    dht_feed += m.coker_go_to_dht[p]
+                dht_output = dht_feed * 0.99
                 # kero_to_diesel bypasses DHT (it's a lighter cut, lower sulfur)
                 total = dht_output + m.kero_to_diesel[p]
                 return m.diesel_volume[p] == total
@@ -671,10 +839,26 @@ class PyomoModelBuilder:
 
         m.diesel_def = pyo.Constraint(m.PERIODS, rule=diesel_def)
 
-        # Fuel oil pool = vgo_to_fo + hcn_to_fo + lco_to_fo + vacuum_residue
+        # Fuel oil pool = vgo_to_fo + hcn_to_fo + lco_to_fo + (CDU vac_resid bypass)
+        # + vacuum_vr_to_fo + coker_hgo + coker_go_to_fo
+        has_vac_ = self.has_vacuum
+        has_coker_ = self.has_coker
+
         def fuel_oil_def(m: Any, p: int) -> Any:
-            vresid = self._cdu_cut_volume(m, "vacuum_residue", p)
-            return m.fuel_oil_volume[p] == m.vgo_to_fo[p] + m.hcn_to_fo[p] + m.lco_to_fo[p] + vresid
+            cdu_vresid = self._cdu_cut_volume(m, "vacuum_residue", p)
+            # CDU vac_resid that's not sent to vacuum unit goes to fuel oil
+            vac_resid_to_fo = cdu_vresid - (m.vac_feed[p] if has_vac_ else 0.0)
+            total = (
+                m.vgo_to_fo[p]
+                + m.hcn_to_fo[p]
+                + m.lco_to_fo[p]
+                + vac_resid_to_fo
+            )
+            if has_vac_:
+                total += m.vacuum_vr_to_fo[p]
+            if has_coker_:
+                total += m.coker_hgo_vol[p] + m.coker_go_to_fo[p]
+            return m.fuel_oil_volume[p] == total
 
         m.fuel_oil_def = pyo.Constraint(m.PERIODS, rule=fuel_oil_def)
 
@@ -971,7 +1155,18 @@ class PyomoModelBuilder:
                 if self.has_kht:
                     extra_opex += m.kero_to_kht[p] * 2.0           # $2/bbl kero HT
                 if self.has_dht:
-                    extra_opex += (m.diesel_to_dht[p] + m.lco_to_dht[p]) * 2.5  # $2.50/bbl diesel HT
+                    dht_total = m.diesel_to_dht[p] + m.lco_to_dht[p]
+                    if self.has_coker:
+                        dht_total += m.coker_go_to_dht[p]
+                    extra_opex += dht_total * 2.5  # $2.50/bbl diesel HT
+                if self.has_vacuum:
+                    extra_opex += m.vac_feed[p] * _VACUUM_OPEX
+                if self.has_coker:
+                    extra_opex += m.coker_feed[p] * _COKER_OPEX
+                    # Coker naphtha needs NHT (~$2/bbl on top of H2 cost)
+                    extra_opex += m.coker_naphtha_vol[p] * 2.0
+                    # Coke revenue: bbl -> tons -> $
+                    extra_credit += m.coker_coke_vol[p] * _BBL_TO_TON_COKE * _COKE_PRICE
                 extra_opex += m.h2_purchased[p] * 1500.0           # $1.50/MSCF × 1000
 
                 margin = (

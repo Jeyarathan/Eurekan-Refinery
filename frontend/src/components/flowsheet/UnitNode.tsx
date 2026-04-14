@@ -11,6 +11,7 @@ export interface UnitNodeData extends Record<string, unknown> {
   bindingHint?: string
   nodeCategory?: string
   areaColor?: string
+  dimmed?: boolean
 }
 
 const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(0)}K` : n.toFixed(0))
@@ -18,7 +19,7 @@ const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(0)}K` : n.toFixed(
 export function UnitNode({ data }: NodeProps) {
   const {
     label, throughput, capacity, conversion,
-    binding, bindingHint, areaColor,
+    binding, bindingHint, areaColor, dimmed,
   } = data as UnitNodeData
 
   const util = capacity && capacity > 0 ? Math.min(throughput / capacity * 100, 100) : 0
@@ -28,7 +29,7 @@ export function UnitNode({ data }: NodeProps) {
     <div
       className={`rounded-lg border bg-white shadow-sm ${
         binding ? 'ring-2 ring-amber-300 animate-pulse' : ''
-      }`}
+      } ${dimmed ? 'opacity-40' : ''}`}
       style={{ borderLeftWidth: 4, borderLeftColor: areaColor || '#cbd5e1', minWidth: 110 }}
       title={binding && bindingHint ? bindingHint : undefined}
     >

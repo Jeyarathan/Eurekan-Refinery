@@ -9,6 +9,7 @@ class OperatingMode(str, Enum):
 
 class UnitType(str, Enum):
     CDU = "cdu"
+    VACUUM = "vacuum"
     FCC = "fcc"
     REFORMER = "reformer"
     HYDROTREATER = "hydrotreater"

@@ -68,7 +68,7 @@ class TestEnums:
         assert UnitType.CDU == "cdu"
         assert UnitType.FCC == "fcc"
         assert UnitType.BLENDER == "blender"
-        assert len(UnitType) == 9
+        assert len(UnitType) == 10
 
     def test_tank_type_values(self):
         assert TankType.CRUDE == "crude"
