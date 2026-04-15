@@ -364,19 +364,31 @@ def _build_planning_result(
             add_node("fcc_1", FlowNodeType.UNIT, "FCC 1", vgo_to_fcc_val)
             add_edge("cdu_1", "fcc_1", "VGO", vgo_to_fcc_val)
 
+        # Naphtha sales node — ensure it exists whenever ANY naphtha stream
+        # is sold (CDU LN/HN, HCU naphtha, coker naphtha). Edges from each
+        # source are added in their respective unit blocks.
+        if naphtha > 1.0:
+            add_node("sale_naphtha", FlowNodeType.SALE_POINT, "Naphtha", naphtha)
+
         # CDU → Naphtha sales
         ln_sell = _safe_value(model.ln_to_sell[p])
         hn_sell = _safe_value(model.hn_to_sell[p])
         naphtha_sell_total = ln_sell + hn_sell
         if naphtha_sell_total > 1.0:
-            add_node("sale_naphtha", FlowNodeType.SALE_POINT, "Naphtha", naphtha)
             add_edge("cdu_1", "sale_naphtha", "Naphtha", naphtha_sell_total)
 
-        # CDU → Jet
-        kero_jet = _safe_value(model.kero_to_jet[p])
-        if kero_jet > 1.0:
-            add_node("sale_jet", FlowNodeType.SALE_POINT, "Jet", jet)
-            add_edge("cdu_1", "sale_jet", "Kerosene", kero_jet)
+        # CDU → Jet (ONLY when KHT is absent; with KHT, kero flows through
+        # kero_to_kht and kero_to_jet is a disconnected ghost variable).
+        has_kht_for_jet = hasattr(model, "kero_to_kht")
+        if not has_kht_for_jet:
+            kero_jet = _safe_value(model.kero_to_jet[p])
+            if kero_jet > 1.0:
+                add_node("sale_jet", FlowNodeType.SALE_POINT, "Jet", jet)
+                add_edge("cdu_1", "sale_jet", "Kerosene", kero_jet)
+        else:
+            # Ensure sale_jet node exists when KHT is present (KHT edge below adds it)
+            if jet > 1.0:
+                add_node("sale_jet", FlowNodeType.SALE_POINT, "Jet", jet)
 
         # CDU → Diesel (CDU diesel portion + kero_to_diesel)
         kero_diesel = _safe_value(model.kero_to_diesel[p])
