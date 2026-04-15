@@ -637,7 +637,22 @@ def _build_planning_result(
         for uid, uconf in config.units.items():
             if uid not in flow_node_ids:
                 display = uconf.unit_id.replace("_", " ").title()
-                if "goht" in uid:
+                # Check most-specific names FIRST (before generic keywords)
+                if uid == "arom_reformer":
+                    display = "Aromatics Reformer"
+                elif uid == "reformer_1":
+                    display = "Reformer"
+                elif uid == "isom_c56":
+                    display = "C5/C6 Isom"
+                elif uid == "isom_c4":
+                    display = "C4 Isom"
+                elif uid == "dimersol":
+                    display = "Dimersol"
+                elif uid == "kht_1":
+                    display = "Kero HT"
+                elif uid == "dht_1":
+                    display = "Diesel HT"
+                elif "goht" in uid:
                     display = "GO HT"
                 elif "scanfiner" in uid:
                     display = "Scanfiner"
@@ -645,10 +660,6 @@ def _build_planning_result(
                     display = "Alkylation"
                 elif "reformer" in uid:
                     display = "Reformer"
-                elif uid == "kht_1":
-                    display = "Kero HT"
-                elif uid == "dht_1":
-                    display = "Diesel HT"
                 elif "nht" in uid:
                     display = "Naphtha HT"
                 elif "vacuum" in uid:
@@ -657,14 +668,6 @@ def _build_planning_result(
                     display = "Coker"
                 elif uid == "hcu_1" or "hcu" in uid:
                     display = "Hydrocracker"
-                elif uid == "isom_c56":
-                    display = "C5/C6 Isom"
-                elif uid == "isom_c4":
-                    display = "C4 Isom"
-                elif uid == "arom_reformer":
-                    display = "Aromatics Reformer"
-                elif uid == "dimersol":
-                    display = "Dimersol"
                 add_node(uid, FlowNodeType.UNIT, display, 0.0)
 
         # Potential (zero-volume) edges for idle units — shown dimmed in

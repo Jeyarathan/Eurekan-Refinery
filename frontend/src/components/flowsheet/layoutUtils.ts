@@ -129,7 +129,22 @@ function nodePosition(id: string, nodeType: string, pIdx: number, pCount: number
 }
 
 // ---------- Public API ----------
-export function applyPfdLayout(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
+// Map swim-lane id -> node IDs that live in that lane. Used to hide lanes
+// in Live Flow mode when all their units are idle.
+const LANE_MEMBERSHIP: Record<string, string[]> = {
+  lane_light_ends: ['isom_c4', 'ugp_1', 'sgp_1'],
+  lane_heavy_end: ['vacuum_1', 'coker_1'],
+  lane_hcu: ['hcu_1'],
+  lane_naphtha: ['reformer_1', 'arom_reformer', 'isom_c56', 'splitter_1', 'nht_1'],
+  lane_fcc: ['fcc_1', 'goht_1', 'scanfiner_1', 'alky_1', 'dimersol'],
+  lane_distillate: ['kht_1', 'dht_1'],
+}
+
+export function applyPfdLayout(
+  nodes: Node[],
+  edges: Edge[],
+  showFullDiagram = true,
+): { nodes: Node[]; edges: Edge[] } {
   const purchases = nodes.filter(
     (n) => (n.data as Record<string, unknown>)?.nodeCategory === 'purchase'
       && !n.id.includes('reformate'),
@@ -171,8 +186,28 @@ export function applyPfdLayout(nodes: Node[], edges: Edge[]): { nodes: Node[]; e
     return edge
   })
 
-  // Swim lane backgrounds
-  const laneNodes: Node[] = SWIM_LANE_DEFS.map((lane) => ({
+  // Determine which lanes have at least one active unit (throughput > 1).
+  // In Live Flow mode, hide lanes whose members are all idle.
+  const activeUnitIds = new Set(
+    nodes
+      .filter((n) => {
+        const d = n.data as Record<string, unknown>
+        const throughput = (d?.throughput as number) ?? 0
+        return (d?.nodeCategory as string) === 'unit' && throughput > 1
+      })
+      .map((n) => n.id),
+  )
+  const laneHasActiveUnit = (laneId: string): boolean => {
+    const members = LANE_MEMBERSHIP[laneId] ?? []
+    return members.some((uid) => activeUnitIds.has(uid))
+  }
+
+  // Swim lane backgrounds — hide empty lanes in Live Flow mode
+  const visibleLanes = showFullDiagram
+    ? SWIM_LANE_DEFS
+    : SWIM_LANE_DEFS.filter((lane) => laneHasActiveUnit(lane.id))
+
+  const laneNodes: Node[] = visibleLanes.map((lane) => ({
     id: lane.id,
     type: 'swimlane',
     position: { x: X_LANE_START - 30, y: lane.y },

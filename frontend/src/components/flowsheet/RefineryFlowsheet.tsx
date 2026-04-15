@@ -173,8 +173,9 @@ export function RefineryFlowsheet({
         }
       })
 
-    // Apply PFD boiling-point layout
-    return applyPfdLayout(rfNodes, rfEdges)
+    // Apply PFD boiling-point layout. Pass showFullDiagram so empty lanes
+    // (no active units) can be hidden in Live Flow mode.
+    return applyPfdLayout(rfNodes, rfEdges, showFullDiagram)
   }, [result, showFullDiagram, highlightedNodeId])
 
   const handleNodeClick = useCallback((_: unknown, node: Node) => {
