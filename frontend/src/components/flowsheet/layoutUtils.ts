@@ -17,6 +17,7 @@ const X_BLEND = 940      // gasoline blender
 const X_PRODUCT = 1140   // product sale nodes
 
 // ---------- Y swim lanes (top = light, bottom = heavy) ----------
+const Y_LIGHT_ENDS = -110  // LIGHT ENDS lane (above everything) - C4 isom, gas plants
 const Y_LPG = 0
 const Y_NAPHTHA = 140
 const Y_FCC = 320
@@ -47,6 +48,8 @@ const CDU_PORT_FOR_TARGET: Record<string, string> = {
   fcc_1: 'vgo',
   goht_1: 'vgo',
   hcu_1: 'vgo',
+  isom_c56: 'ln',           // CDU LN to C5/C6 isomerization
+  isom_c4: 'lpg',           // CDU nC4 (from LPG cut) to C4 isomerization
   reformer_1: 'hn',
   splitter_1: 'hn',
   nht_1: 'hn',
@@ -64,6 +67,7 @@ export interface SwimLaneDef {
 }
 
 export const SWIM_LANE_DEFS: SwimLaneDef[] = [
+  { id: 'lane_light_ends', label: 'Light Ends', color: '#fff9c4', y: Y_LIGHT_ENDS - 35, height: 90 },
   { id: 'lane_naphtha', label: 'Naphtha Processing', color: '#e3f2fd', y: Y_NAPHTHA - 35, height: 110 },
   { id: 'lane_fcc', label: 'FCC Complex', color: '#f3e5f5', y: Y_FCC - 35, height: 110 },
   { id: 'lane_hcu', label: 'Hydrocracking', color: '#ede7f6', y: Y_HCU - 35, height: 90 },
@@ -83,8 +87,14 @@ function nodePosition(id: string, nodeType: string, pIdx: number, pCount: number
   // CDU
   if (id === 'cdu_1') return { x: X_CDU, y: Y_FCC - 60 } // tall node centred
 
+  // Light Ends lane (C4 isom, gas plants)
+  if (id === 'isom_c4') return { x: X_LANE_MID, y: Y_LIGHT_ENDS }
+  if (id === 'ugp_1' || id.includes('ugp')) return { x: X_LANE_START, y: Y_LIGHT_ENDS }
+  if (id === 'sgp_1' || id.includes('sgp')) return { x: X_LANE_END, y: Y_LIGHT_ENDS }
+
   // Naphtha lane
   if (id.includes('splitter')) return { x: X_LANE_START, y: Y_NAPHTHA }
+  if (id === 'isom_c56') return { x: X_LANE_MID, y: Y_NAPHTHA + 55 }  // below NHT
   if (id.includes('nht')) return { x: X_LANE_MID, y: Y_NAPHTHA }
   if (id === 'reformer_1') return { x: X_LANE_END, y: Y_NAPHTHA }
 

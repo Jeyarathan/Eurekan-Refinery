@@ -223,6 +223,9 @@ PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     "CDLC": ("coker_1", UnitType.COKER, "Delayed Coker"),
     # Sprint 13: Hydrocracker
     "CHCU": ("hcu_1", UnitType.HYDROCRACKER, "Hydrocracker"),
+    # Sprint 14: Light ends processing
+    "CIS6": ("isom_c56", UnitType.ISOMERIZATION, "C5/C6 Isomerization"),
+    "CIS4": ("isom_c4", UnitType.ISOMERIZATION, "C4 Isomerization"),
 }
 
 # ProcLim tag → (equipment_limit_key, description)

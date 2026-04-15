@@ -60,6 +60,10 @@ _COKER_OPEX = 4.0     # $/bbl coker feed (high energy)
 _COKE_PRICE = 60.0    # $/ton fuel-grade petroleum coke (typical Gulf Coast)
 _BBL_TO_TON_COKE = 0.157  # bbl coke -> metric tons
 _HCU_OPEX = 5.0       # $/bbl hydrocracker feed (high-pressure operation)
+_ISOM56_OPEX = 1.50   # $/bbl C5/C6 isomerization feed
+_ISOMC4_OPEX = 2.0    # $/bbl C4 isomerization feed
+_ISOM56_VOL_YIELD = 0.98  # 98% volume yield on C5/C6 isom
+_ISOMC4_IC4_YIELD = 0.95  # 95% iC4 yield on nC4 feed (with recycle)
 
 # Vacuum unit yield fractions (LVGO + HVGO + VR = 1.0)
 _VAC_LVGO_FRAC = 0.25
@@ -85,6 +89,8 @@ _BLEND_COMPONENT_PROPS: dict[str, dict[str, float]] = {
     "fcc_hcn":  {"ron": 86.0, "rvp": 2.0,  "sulfur": 0.005, "spg": 0.82, "benzene": 0.8, "aromatics": 45.0, "olefins": 6.0},
     "n_butane": {"ron": 93.8, "rvp": 51.6, "sulfur": 0.0,  "spg": 0.585, "benzene": 0.0, "aromatics": 0.0,  "olefins": 0.0},
     "reformate":{"ron": 98.0, "rvp": 4.0,  "sulfur": 0.001,"spg": 0.79, "benzene": 1.5, "aromatics": 65.0, "olefins": 1.0},
+    # Sprint 14: C5/C6 isomerate (RON 83, near-zero benzene/aromatics)
+    "isomerate":{"ron": 83.0, "rvp": 14.0, "sulfur": 0.0001,"spg": 0.65, "benzene": 0.0, "aromatics": 0.5, "olefins": 0.5},
 }
 
 # Gasoline specs — defaults if a product doesn't specify them
@@ -190,6 +196,15 @@ class PyomoModelBuilder:
         self.has_hcu = hcu_unit is not None
         self.hcu_capacity = hcu_unit.capacity if hcu_unit else 0.0
 
+        # Sprint 14: C5/C6 + C4 Isomerization
+        isom56_unit = config.units.get("isom_c56")
+        self.has_isom56 = isom56_unit is not None
+        self.isom56_capacity = isom56_unit.capacity if isom56_unit else 0.0
+
+        isomc4_unit = config.units.get("isom_c4")
+        self.has_isomc4 = isomc4_unit is not None
+        self.isomc4_capacity = isomc4_unit.capacity if isomc4_unit else 0.0
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -221,6 +236,10 @@ class PyomoModelBuilder:
             self._add_coker_constraints(m)
         if self.has_hcu:
             self._add_hcu_constraints(m)
+        if self.has_isom56:
+            self._add_isom56_constraints(m)
+        if self.has_isomc4:
+            self._add_isomc4_constraints(m)
         self._add_hydrogen_balance(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
@@ -320,6 +339,18 @@ class PyomoModelBuilder:
             m.vacuum_hvgo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.vacuum_vr_to_coker = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.vacuum_vr_to_fo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- C5/C6 Isomerization variables (Sprint 14) ---
+        # LN feed, produces isomerate at 98% vol yield
+        if self.has_isom56:
+            m.ln_to_isom = pyo.Var(m.PERIODS, bounds=(0.0, self.isom56_capacity), initialize=0.0)
+            m.isomerate_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- C4 Isomerization variables (Sprint 14) ---
+        # nC4 feed (from CDU + FCC), produces iC4 for alkylation
+        if self.has_isomc4:
+            m.nc4_to_c4isom = pyo.Var(m.PERIODS, bounds=(0.0, self.isomc4_capacity), initialize=0.0)
+            m.ic4_from_c4isom = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
 
         # --- Hydrocracker variables (Sprint 13) ---
         # HCU feeds on VGO (alternative to FCC). Products: jet, diesel, naphtha, LPG.
@@ -547,14 +578,19 @@ class PyomoModelBuilder:
 
     def _add_alkylation_constraints(self, m: pyo.ConcreteModel) -> None:
         """Alkylation: olefins → alkylate at 1.75× yield, requires iC4."""
+        has_isomc4 = self.has_isomc4
+
         def alky_yield_rule(m: Any, p: int) -> Any:
             return m.alkylate_volume[p] == m.c3c4_to_alky[p] * 1.75
 
         m.alky_yield_def = pyo.Constraint(m.PERIODS, rule=alky_yield_rule)
 
-        # iC4 requirement: 1.1× olefin feed
+        # iC4 requirement: 1.1× olefin feed. Supply = ic4_purchased + ic4_from_c4isom.
         def alky_ic4_rule(m: Any, p: int) -> Any:
-            return m.ic4_purchased[p] >= m.c3c4_to_alky[p] * 1.1
+            supply = m.ic4_purchased[p]
+            if has_isomc4:
+                supply += m.ic4_from_c4isom[p]
+            return supply >= m.c3c4_to_alky[p] * 1.1
 
         m.alky_ic4_con = pyo.Constraint(m.PERIODS, rule=alky_ic4_rule)
 
@@ -705,6 +741,38 @@ class PyomoModelBuilder:
         m.hcu_unconverted_def = pyo.Constraint(m.PERIODS, rule=hcu_unconv_rule)
 
     # ------------------------------------------------------------------
+    # C5/C6 Isomerization constraints (Sprint 14)
+    # ------------------------------------------------------------------
+
+    def _add_isom56_constraints(self, m: pyo.ConcreteModel) -> None:
+        """C5/C6 isom: LN -> isomerate at 98% volume yield."""
+        cap = self.isom56_capacity
+
+        def cap_rule(m: Any, p: int) -> Any:
+            return m.ln_to_isom[p] <= cap
+        m.isom56_capacity_con = pyo.Constraint(m.PERIODS, rule=cap_rule)
+
+        def yield_rule(m: Any, p: int) -> Any:
+            return m.isomerate_vol[p] == m.ln_to_isom[p] * _ISOM56_VOL_YIELD
+        m.isom56_yield_def = pyo.Constraint(m.PERIODS, rule=yield_rule)
+
+    # ------------------------------------------------------------------
+    # C4 Isomerization constraints (Sprint 14)
+    # ------------------------------------------------------------------
+
+    def _add_isomc4_constraints(self, m: pyo.ConcreteModel) -> None:
+        """C4 isom: nC4 -> iC4 at 95% yield (with recycle)."""
+        cap = self.isomc4_capacity
+
+        def cap_rule(m: Any, p: int) -> Any:
+            return m.nc4_to_c4isom[p] <= cap
+        m.isomc4_capacity_con = pyo.Constraint(m.PERIODS, rule=cap_rule)
+
+        def yield_rule(m: Any, p: int) -> Any:
+            return m.ic4_from_c4isom[p] == m.nc4_to_c4isom[p] * _ISOMC4_IC4_YIELD
+        m.isomc4_yield_def = pyo.Constraint(m.PERIODS, rule=yield_rule)
+
+    # ------------------------------------------------------------------
     # Hydrogen balance
     # ------------------------------------------------------------------
 
@@ -734,6 +802,11 @@ class PyomoModelBuilder:
             if self.has_hcu:
                 hcu_scfb = 1500.0 + 30.0 * (m.hcu_conversion[p] - 60.0)
                 demand += m.vgo_to_hcu[p] * hcu_scfb / 1e6
+            # C5/C6 Isom: 150 SCFB, C4 Isom: 50 SCFB (both very low)
+            if self.has_isom56:
+                demand += m.ln_to_isom[p] * 150.0 / 1e6
+            if self.has_isomc4:
+                demand += m.nc4_to_c4isom[p] * 50.0 / 1e6
 
             return supply >= demand
 
@@ -744,9 +817,14 @@ class PyomoModelBuilder:
     # ------------------------------------------------------------------
 
     def _add_disposition_constraints(self, m: pyo.ConcreteModel) -> None:
-        # CDU light naphtha
+        # CDU light naphtha — 2 or 3 destinations depending on C5/C6 isom
+        has_isom56 = self.has_isom56
+
         def ln_disp_rule(m: Any, p: int) -> Any:
-            return m.ln_to_blend[p] + m.ln_to_sell[p] == self._cdu_cut_volume(m, "light_naphtha", p)
+            lhs = m.ln_to_blend[p] + m.ln_to_sell[p]
+            if has_isom56:
+                lhs += m.ln_to_isom[p]
+            return lhs == self._cdu_cut_volume(m, "light_naphtha", p)
 
         m.ln_disposition = pyo.Constraint(m.PERIODS, rule=ln_disp_rule)
 
@@ -794,10 +872,16 @@ class PyomoModelBuilder:
 
         m.vgo_disposition = pyo.Constraint(m.PERIODS, rule=vgo_disp_rule)
 
-        # NC4 — fraction of CDU LPG cut
+        # NC4 — fraction of CDU LPG cut.
+        # Destinations: gasoline blend, LPG sale, C4 isom (feeds alky iC4).
+        has_isomc4 = self.has_isomc4
+
         def nc4_disp_rule(m: Any, p: int) -> Any:
             nc4_avail = _NC4_FRACTION_OF_LPG * self._cdu_cut_volume(m, "lpg", p)
-            return m.nc4_to_blend[p] + m.nc4_to_lpg[p] == nc4_avail
+            lhs = m.nc4_to_blend[p] + m.nc4_to_lpg[p]
+            if has_isomc4:
+                lhs += m.nc4_to_c4isom[p]
+            return lhs == nc4_avail
 
         m.nc4_disposition = pyo.Constraint(m.PERIODS, rule=nc4_disp_rule)
 
@@ -849,10 +933,12 @@ class PyomoModelBuilder:
     # ------------------------------------------------------------------
 
     def _add_product_volume_constraints(self, m: pyo.ConcreteModel) -> None:
-        # Gasoline = LN + HN + LCN + HCN + NC4 + reformate + scanfiner_output + alkylate
+        # Gasoline = LN + HN + LCN + HCN + NC4 + reformate + scanfiner_output
+        #          + alkylate + isomerate (Sprint 14)
         has_ref = self.has_reformer
         has_scan = self.has_scanfiner
         has_alky = self.has_alky
+        has_isom56 = self.has_isom56
 
         def gasoline_def(m: Any, p: int) -> Any:
             total = (
@@ -869,6 +955,8 @@ class PyomoModelBuilder:
                 total += m.scanfiner_output[p]
             if has_alky:
                 total += m.alkylate_volume[p]
+            if has_isom56:
+                total += m.isomerate_vol[p]
             return m.gasoline_volume[p] == total
 
         m.gasoline_def = pyo.Constraint(m.PERIODS, rule=gasoline_def)
@@ -1008,8 +1096,10 @@ class PyomoModelBuilder:
         bi = {k: _bi(v["ron"]) for k, v in _BLEND_COMPONENT_PROPS.items()}
         rvp_pow = {k: v["rvp"] ** _RVP_EXP for k, v in _BLEND_COMPONENT_PROPS.items()}
 
+        has_isom56_b = self.has_isom56
+
         def _blend_terms(m: Any, p: int, attr: str) -> Any:
-            return (
+            total = (
                 m.ln_to_blend[p] * _BLEND_COMPONENT_PROPS["cdu_ln"][attr]
                 + m.hn_to_blend[p] * _BLEND_COMPONENT_PROPS["cdu_hn"][attr]
                 + m.fcc_lcn_vol[p] * _BLEND_COMPONENT_PROPS["fcc_lcn"][attr]
@@ -1017,6 +1107,9 @@ class PyomoModelBuilder:
                 + m.nc4_to_blend[p] * _BLEND_COMPONENT_PROPS["n_butane"][attr]
                 + m.reformate_purchased[p] * _BLEND_COMPONENT_PROPS["reformate"][attr]
             )
+            if has_isom56_b:
+                total += m.isomerate_vol[p] * _BLEND_COMPONENT_PROPS["isomerate"][attr]
+            return total
 
         # --- Octane (RON via Blending Index) ---
         # Σ(vol × BI_i) ≥ BI(min_RON) × gasoline_volume
@@ -1039,6 +1132,8 @@ class PyomoModelBuilder:
                 sev = m.reformer_severity[p]
                 ref_bi = _BI_C + _BI_B * sev + _BI_A * sev * sev
                 bi_total += m.reformate_from_reformer[p] * ref_bi
+            if has_isom56_b:
+                bi_total += m.isomerate_vol[p] * bi["isomerate"]
             return bi_total >= bi_min * m.gasoline_volume[p]
 
         m.octane_spec = pyo.Constraint(m.PERIODS, rule=octane_rule)
@@ -1056,6 +1151,8 @@ class PyomoModelBuilder:
                 + m.nc4_to_blend[p] * rvp_pow["n_butane"]
                 + m.reformate_purchased[p] * rvp_pow["reformate"]
             )
+            if has_isom56_b:
+                rvp_total += m.isomerate_vol[p] * rvp_pow["isomerate"]
             return rvp_total <= rvp_max_pow * m.gasoline_volume[p]
 
         m.rvp_spec = pyo.Constraint(m.PERIODS, rule=rvp_rule)
@@ -1087,6 +1184,9 @@ class PyomoModelBuilder:
                 + m.nc4_to_blend[p] * spg("n_butane")
                 + m.reformate_purchased[p] * spg("reformate")
             )
+            if has_isom56_b:
+                wt_sulfur += m.isomerate_vol[p] * spg_s("isomerate")
+                wt_total += m.isomerate_vol[p] * spg("isomerate")
             return wt_sulfur <= s_max * wt_total
 
         m.sulfur_spec = pyo.Constraint(m.PERIODS, rule=sulfur_rule)
@@ -1271,6 +1371,10 @@ class PyomoModelBuilder:
                     extra_credit += m.coker_coke_vol[p] * _BBL_TO_TON_COKE * _COKE_PRICE
                 if self.has_hcu:
                     extra_opex += m.vgo_to_hcu[p] * _HCU_OPEX
+                if self.has_isom56:
+                    extra_opex += m.ln_to_isom[p] * _ISOM56_OPEX
+                if self.has_isomc4:
+                    extra_opex += m.nc4_to_c4isom[p] * _ISOMC4_OPEX
                 extra_opex += m.h2_purchased[p] * 1500.0           # $1.50/MSCF × 1000
 
                 margin = (

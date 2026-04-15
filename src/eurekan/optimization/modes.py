@@ -492,6 +492,26 @@ def _build_planning_result(
                     add_edge("coker_1", "dht_1", "Coker GO", coker_go_dht)
                 add_edge("dht_1", "sale_diesel", "ULSD", dht_feed * 0.99)
 
+        # C5/C6 Isomerization: CDU LN → C5/C6 Isom → Isomerate → Gasoline Blender
+        if hasattr(model, "ln_to_isom"):
+            ln_isom = _safe_value(model.ln_to_isom[p])
+            iso_out = _safe_value(model.isomerate_vol[p])
+            if ln_isom > 1.0:
+                add_node("isom_c56", FlowNodeType.UNIT, "C5/C6 Isom", ln_isom)
+                add_edge("cdu_1", "isom_c56", "Light Naphtha", ln_isom)
+                if iso_out > 1.0:
+                    add_edge("isom_c56", "blend_gasoline", "Isomerate", iso_out)
+
+        # C4 Isomerization: CDU nC4 → C4 Isom → iC4 → Alkylation
+        if hasattr(model, "nc4_to_c4isom"):
+            nc4_isom = _safe_value(model.nc4_to_c4isom[p])
+            ic4_out = _safe_value(model.ic4_from_c4isom[p])
+            if nc4_isom > 1.0:
+                add_node("isom_c4", FlowNodeType.UNIT, "C4 Isom", nc4_isom)
+                add_edge("cdu_1", "isom_c4", "nC4", nc4_isom)
+                if ic4_out > 1.0 and hasattr(model, "c3c4_to_alky"):
+                    add_edge("isom_c4", "alky_1", "iC4", ic4_out)
+
         # Hydrocracker: VGO → HCU → jet + diesel + naphtha + LPG + unconverted
         if hasattr(model, "vgo_to_hcu"):
             vgo_hcu = _safe_value(model.vgo_to_hcu[p])
@@ -590,6 +610,10 @@ def _build_planning_result(
                     display = "Coker"
                 elif uid == "hcu_1" or "hcu" in uid:
                     display = "Hydrocracker"
+                elif uid == "isom_c56":
+                    display = "C5/C6 Isom"
+                elif uid == "isom_c4":
+                    display = "C4 Isom"
                 add_node(uid, FlowNodeType.UNIT, display, 0.0)
 
         # CDU dispositions in CDU yields (cuts)
