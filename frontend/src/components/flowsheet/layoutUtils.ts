@@ -35,6 +35,7 @@ const PRODUCT_Y: Record<string, number> = {
   sale_diesel: Y_DISTILLATE + 60,
   sale_fuel_oil: Y_BOTTOMS,
   sale_coke: Y_HEAVY_END + 40,
+  sale_btx: Y_NAPHTHA - 60,  // BTX petchem product (near top)
 }
 
 // CDU output port IDs that edges should reference
@@ -50,6 +51,7 @@ const CDU_PORT_FOR_TARGET: Record<string, string> = {
   hcu_1: 'vgo',
   isom_c56: 'ln',           // CDU LN to C5/C6 isomerization
   isom_c4: 'lpg',           // CDU nC4 (from LPG cut) to C4 isomerization
+  arom_reformer: 'hn',      // CDU HN to aromatics reformer
   reformer_1: 'hn',
   splitter_1: 'hn',
   nht_1: 'hn',
@@ -97,12 +99,14 @@ function nodePosition(id: string, nodeType: string, pIdx: number, pCount: number
   if (id === 'isom_c56') return { x: X_LANE_MID, y: Y_NAPHTHA + 55 }  // below NHT
   if (id.includes('nht')) return { x: X_LANE_MID, y: Y_NAPHTHA }
   if (id === 'reformer_1') return { x: X_LANE_END, y: Y_NAPHTHA }
+  if (id === 'arom_reformer') return { x: X_LANE_END, y: Y_NAPHTHA - 60 }  // above mogas reformer
 
   // FCC lane
   if (id === 'goht_1' || id.includes('go_ht')) return { x: X_LANE_START, y: Y_FCC }
   if (id === 'fcc_1') return { x: X_LANE_MID, y: Y_FCC }
   if (id === 'scanfiner_1' || id.includes('scanfin')) return { x: X_LANE_END, y: Y_FCC }
   if (id === 'alky_1' || id.includes('alky')) return { x: X_LANE_END, y: Y_FCC - 60 }
+  if (id === 'dimersol') return { x: X_LANE_END, y: Y_FCC + 55 }  // below alky in FCC lane
 
   // Hydrocracking lane
   if (id === 'hcu_1' || id.includes('hcu')) return { x: X_LANE_MID, y: Y_HCU }

@@ -65,6 +65,17 @@ _ISOMC4_OPEX = 2.0    # $/bbl C4 isomerization feed
 _ISOM56_VOL_YIELD = 0.98  # 98% volume yield on C5/C6 isom
 _ISOMC4_IC4_YIELD = 0.95  # 95% iC4 yield on nC4 feed (with recycle)
 
+# Sprint 15: Aromatics reformer + Dimersol
+_AROM_OPEX = 4.0           # $/bbl aromatics reformer feed
+_AROM_BTX_YIELD = 0.45     # 45% BTX extract
+_AROM_RAFFINATE_YIELD = 0.40  # 40% raffinate (low RON)
+_AROM_H2_WT = 0.045        # 4.5 wt% H2
+_AROM_LPG_YIELD = 0.6 * (1.0 - 0.45 - 0.40 - 0.045)  # LPG fraction of remainder
+_DIMERSOL_OPEX = 2.0       # $/bbl dimersol feed
+_DIMERSOL_YIELD = 0.90     # 90% dimate yield
+_BTX_PRICE_PER_TON = 900.0  # $/ton BTX petchem (midpoint of $800-1200)
+_BBL_TO_TON_BTX = 0.870 * 0.159  # spg 0.87, 0.159 m3/bbl
+
 # Vacuum unit yield fractions (LVGO + HVGO + VR = 1.0)
 _VAC_LVGO_FRAC = 0.25
 _VAC_HVGO_FRAC = 0.25
@@ -91,6 +102,10 @@ _BLEND_COMPONENT_PROPS: dict[str, dict[str, float]] = {
     "reformate":{"ron": 98.0, "rvp": 4.0,  "sulfur": 0.001,"spg": 0.79, "benzene": 1.5, "aromatics": 65.0, "olefins": 1.0},
     # Sprint 14: C5/C6 isomerate (RON 83, near-zero benzene/aromatics)
     "isomerate":{"ron": 83.0, "rvp": 14.0, "sulfur": 0.0001,"spg": 0.65, "benzene": 0.0, "aromatics": 0.5, "olefins": 0.5},
+    # Sprint 15: Aromatics reformer raffinate (low RON, very clean)
+    "raffinate":{"ron": 60.0, "rvp": 3.0,  "sulfur": 0.0005,"spg": 0.72, "benzene": 0.0, "aromatics": 5.0, "olefins": 0.5},
+    # Sprint 15: Dimersol dimate (high RON, HIGH olefins - C6 alkenes)
+    "dimate":   {"ron": 96.0, "rvp": 3.0,  "sulfur": 0.0001,"spg": 0.72, "benzene": 0.0, "aromatics": 1.0, "olefins": 80.0},
 }
 
 # Gasoline specs — defaults if a product doesn't specify them
@@ -205,6 +220,15 @@ class PyomoModelBuilder:
         self.has_isomc4 = isomc4_unit is not None
         self.isomc4_capacity = isomc4_unit.capacity if isomc4_unit else 0.0
 
+        # Sprint 15: Aromatics reformer + Dimersol
+        arom_unit = config.units.get("arom_reformer")
+        self.has_arom = arom_unit is not None
+        self.arom_capacity = arom_unit.capacity if arom_unit else 0.0
+
+        dim_unit = config.units.get("dimersol")
+        self.has_dimersol = dim_unit is not None
+        self.dimersol_capacity = dim_unit.capacity if dim_unit else 0.0
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -240,6 +264,10 @@ class PyomoModelBuilder:
             self._add_isom56_constraints(m)
         if self.has_isomc4:
             self._add_isomc4_constraints(m)
+        if self.has_arom:
+            self._add_arom_constraints(m)
+        if self.has_dimersol:
+            self._add_dimersol_constraints(m)
         self._add_hydrogen_balance(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
@@ -345,6 +373,23 @@ class PyomoModelBuilder:
         if self.has_isom56:
             m.ln_to_isom = pyo.Var(m.PERIODS, bounds=(0.0, self.isom56_capacity), initialize=0.0)
             m.isomerate_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Aromatics Reformer variables (Sprint 15) ---
+        # Competes with mogas reformer for HN feed. Produces BTX (petchem
+        # extract), raffinate (low-RON blend stock), H2, LPG.
+        if self.has_arom:
+            m.hn_to_arom = pyo.Var(m.PERIODS, bounds=(0.0, self.arom_capacity), initialize=0.0)
+            m.btx_volume = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.arom_raffinate_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.arom_hydrogen = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.arom_lpg = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Dimersol variables (Sprint 15) ---
+        # Competes with alkylation for FCC propylene. Produces dimate (high
+        # RON + high olefins gasoline blend component).
+        if self.has_dimersol:
+            m.prop_to_dimersol = pyo.Var(m.PERIODS, bounds=(0.0, self.dimersol_capacity), initialize=0.0)
+            m.dimate_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
 
         # --- C4 Isomerization variables (Sprint 14) ---
         # nC4 feed (from CDU + FCC), produces iC4 for alkylation
@@ -773,6 +818,60 @@ class PyomoModelBuilder:
         m.isomc4_yield_def = pyo.Constraint(m.PERIODS, rule=yield_rule)
 
     # ------------------------------------------------------------------
+    # Aromatics Reformer constraints (Sprint 15)
+    # ------------------------------------------------------------------
+
+    def _add_arom_constraints(self, m: pyo.ConcreteModel) -> None:
+        """Aromatics reformer: HN -> BTX + raffinate + H2 + LPG."""
+        cap = self.arom_capacity
+
+        def cap_rule(m: Any, p: int) -> Any:
+            return m.hn_to_arom[p] <= cap
+        m.arom_capacity_con = pyo.Constraint(m.PERIODS, rule=cap_rule)
+
+        def btx_rule(m: Any, p: int) -> Any:
+            return m.btx_volume[p] == m.hn_to_arom[p] * _AROM_BTX_YIELD
+        m.arom_btx_def = pyo.Constraint(m.PERIODS, rule=btx_rule)
+
+        def raff_rule(m: Any, p: int) -> Any:
+            return m.arom_raffinate_vol[p] == m.hn_to_arom[p] * _AROM_RAFFINATE_YIELD
+        m.arom_raffinate_def = pyo.Constraint(m.PERIODS, rule=raff_rule)
+
+        def h2_rule(m: Any, p: int) -> Any:
+            # H2 production in MMSCFD: wt% * feed * 500 SCF/bbl / 1e6
+            return m.arom_hydrogen[p] == m.hn_to_arom[p] * _AROM_H2_WT * 500.0 / 1e6
+        m.arom_h2_def = pyo.Constraint(m.PERIODS, rule=h2_rule)
+
+        def lpg_rule(m: Any, p: int) -> Any:
+            return m.arom_lpg[p] == m.hn_to_arom[p] * _AROM_LPG_YIELD
+        m.arom_lpg_def = pyo.Constraint(m.PERIODS, rule=lpg_rule)
+
+    # ------------------------------------------------------------------
+    # Dimersol constraints (Sprint 15)
+    # ------------------------------------------------------------------
+
+    def _add_dimersol_constraints(self, m: pyo.ConcreteModel) -> None:
+        """Dimersol: propylene -> dimate at 90% yield."""
+        cap = self.dimersol_capacity
+
+        def cap_rule(m: Any, p: int) -> Any:
+            return m.prop_to_dimersol[p] <= cap
+        m.dimersol_capacity_con = pyo.Constraint(m.PERIODS, rule=cap_rule)
+
+        def yield_rule(m: Any, p: int) -> Any:
+            return m.dimate_vol[p] == m.prop_to_dimersol[p] * _DIMERSOL_YIELD
+        m.dimersol_yield_def = pyo.Constraint(m.PERIODS, rule=yield_rule)
+
+        # Propylene feed must come from FCC C3 stream (after alkylation takes its share)
+        # FCC c3 is half the C3/C4 (the propylene portion). Alky takes c3c4 mixed.
+        # Simplified: dimersol feed + (propylene to alky) <= fcc_c3_vol
+        # We approximate by using fcc_c3_vol as the propylene pool.
+        def feed_rule(m: Any, p: int) -> Any:
+            # Rough: total propylene <= fcc C3 stream
+            return m.prop_to_dimersol[p] <= m.fcc_c3_vol[p]
+        m.dimersol_feed_con = pyo.Constraint(m.PERIODS, rule=feed_rule)
+
+    # ------------------------------------------------------------------
     # Hydrogen balance
     # ------------------------------------------------------------------
 
@@ -782,6 +881,8 @@ class PyomoModelBuilder:
             supply = m.h2_purchased[p]
             if self.has_reformer:
                 supply += m.reformer_hydrogen[p]
+            if self.has_arom:
+                supply += m.arom_hydrogen[p]
 
             demand = 0.0
             if self.has_goht:
@@ -828,13 +929,17 @@ class PyomoModelBuilder:
 
         m.ln_disposition = pyo.Constraint(m.PERIODS, rule=ln_disp_rule)
 
-        # CDU heavy naphtha — 2 or 3 destinations depending on reformer
+        # CDU heavy naphtha — multiple destinations: blend, sell, mogas
+        # reformer, aromatics reformer.
         has_ref = self.has_reformer
+        has_arom = self.has_arom
 
         def hn_disp_rule(m: Any, p: int) -> Any:
             lhs = m.hn_to_blend[p] + m.hn_to_sell[p]
             if has_ref:
                 lhs += m.hn_to_reformer[p]
+            if has_arom:
+                lhs += m.hn_to_arom[p]
             return lhs == self._cdu_cut_volume(m, "heavy_naphtha", p)
 
         m.hn_disposition = pyo.Constraint(m.PERIODS, rule=hn_disp_rule)
@@ -934,11 +1039,13 @@ class PyomoModelBuilder:
 
     def _add_product_volume_constraints(self, m: pyo.ConcreteModel) -> None:
         # Gasoline = LN + HN + LCN + HCN + NC4 + reformate + scanfiner_output
-        #          + alkylate + isomerate (Sprint 14)
+        #          + alkylate + isomerate (Sprint 14) + raffinate + dimate (Sprint 15)
         has_ref = self.has_reformer
         has_scan = self.has_scanfiner
         has_alky = self.has_alky
         has_isom56 = self.has_isom56
+        has_arom = self.has_arom
+        has_dim = self.has_dimersol
 
         def gasoline_def(m: Any, p: int) -> Any:
             total = (
@@ -957,6 +1064,10 @@ class PyomoModelBuilder:
                 total += m.alkylate_volume[p]
             if has_isom56:
                 total += m.isomerate_vol[p]
+            if has_arom:
+                total += m.arom_raffinate_vol[p]
+            if has_dim:
+                total += m.dimate_vol[p]
             return m.gasoline_volume[p] == total
 
         m.gasoline_def = pyo.Constraint(m.PERIODS, rule=gasoline_def)
@@ -1048,8 +1159,11 @@ class PyomoModelBuilder:
         m.fuel_oil_def = pyo.Constraint(m.PERIODS, rule=fuel_oil_def)
 
         # LPG pool = CDU LPG + nc4_to_lpg + FCC C3/C4 + reformer LPG + HCU LPG
-        # - C3/C4 to alky
+        #          + aromatics reformer LPG
+        # - C3/C4 to alky - propylene to dimersol
         has_hcu_l = self.has_hcu
+        has_arom_l = self.has_arom
+        has_dim_l = self.has_dimersol
 
         def lpg_def(m: Any, p: int) -> Any:
             cdu_non_nc4 = (1.0 - _NC4_FRACTION_OF_LPG) * self._cdu_cut_volume(m, "lpg", p)
@@ -1058,8 +1172,12 @@ class PyomoModelBuilder:
                 total += m.reformer_lpg[p]
             if has_hcu_l:
                 total += m.hcu_lpg_vol[p]
+            if has_arom_l:
+                total += m.arom_lpg[p]
             if has_alky:
                 total -= m.c3c4_to_alky[p]
+            if has_dim_l:
+                total -= m.prop_to_dimersol[p]
             return m.lpg_volume[p] == total
 
         m.lpg_def = pyo.Constraint(m.PERIODS, rule=lpg_def)
@@ -1097,6 +1215,8 @@ class PyomoModelBuilder:
         rvp_pow = {k: v["rvp"] ** _RVP_EXP for k, v in _BLEND_COMPONENT_PROPS.items()}
 
         has_isom56_b = self.has_isom56
+        has_arom_b = self.has_arom
+        has_dim_b = self.has_dimersol
 
         def _blend_terms(m: Any, p: int, attr: str) -> Any:
             total = (
@@ -1109,6 +1229,10 @@ class PyomoModelBuilder:
             )
             if has_isom56_b:
                 total += m.isomerate_vol[p] * _BLEND_COMPONENT_PROPS["isomerate"][attr]
+            if has_arom_b:
+                total += m.arom_raffinate_vol[p] * _BLEND_COMPONENT_PROPS["raffinate"][attr]
+            if has_dim_b:
+                total += m.dimate_vol[p] * _BLEND_COMPONENT_PROPS["dimate"][attr]
             return total
 
         # --- Octane (RON via Blending Index) ---
@@ -1134,6 +1258,10 @@ class PyomoModelBuilder:
                 bi_total += m.reformate_from_reformer[p] * ref_bi
             if has_isom56_b:
                 bi_total += m.isomerate_vol[p] * bi["isomerate"]
+            if has_arom_b:
+                bi_total += m.arom_raffinate_vol[p] * bi["raffinate"]
+            if has_dim_b:
+                bi_total += m.dimate_vol[p] * bi["dimate"]
             return bi_total >= bi_min * m.gasoline_volume[p]
 
         m.octane_spec = pyo.Constraint(m.PERIODS, rule=octane_rule)
@@ -1153,6 +1281,10 @@ class PyomoModelBuilder:
             )
             if has_isom56_b:
                 rvp_total += m.isomerate_vol[p] * rvp_pow["isomerate"]
+            if has_arom_b:
+                rvp_total += m.arom_raffinate_vol[p] * rvp_pow["raffinate"]
+            if has_dim_b:
+                rvp_total += m.dimate_vol[p] * rvp_pow["dimate"]
             return rvp_total <= rvp_max_pow * m.gasoline_volume[p]
 
         m.rvp_spec = pyo.Constraint(m.PERIODS, rule=rvp_rule)
@@ -1187,6 +1319,12 @@ class PyomoModelBuilder:
             if has_isom56_b:
                 wt_sulfur += m.isomerate_vol[p] * spg_s("isomerate")
                 wt_total += m.isomerate_vol[p] * spg("isomerate")
+            if has_arom_b:
+                wt_sulfur += m.arom_raffinate_vol[p] * spg_s("raffinate")
+                wt_total += m.arom_raffinate_vol[p] * spg("raffinate")
+            if has_dim_b:
+                wt_sulfur += m.dimate_vol[p] * spg_s("dimate")
+                wt_total += m.dimate_vol[p] * spg("dimate")
             return wt_sulfur <= s_max * wt_total
 
         m.sulfur_spec = pyo.Constraint(m.PERIODS, rule=sulfur_rule)
@@ -1375,6 +1513,14 @@ class PyomoModelBuilder:
                     extra_opex += m.ln_to_isom[p] * _ISOM56_OPEX
                 if self.has_isomc4:
                     extra_opex += m.nc4_to_c4isom[p] * _ISOMC4_OPEX
+                if self.has_arom:
+                    extra_opex += m.hn_to_arom[p] * _AROM_OPEX
+                    # BTX revenue: bbl -> tons -> $
+                    extra_credit += m.btx_volume[p] * _BBL_TO_TON_BTX * _BTX_PRICE_PER_TON
+                    # H2 credit from aromatics reformer
+                    extra_credit += m.arom_hydrogen[p] * 1.5  # $1.50/MSCF H2
+                if self.has_dimersol:
+                    extra_opex += m.prop_to_dimersol[p] * _DIMERSOL_OPEX
                 extra_opex += m.h2_purchased[p] * 1500.0           # $1.50/MSCF × 1000
 
                 margin = (

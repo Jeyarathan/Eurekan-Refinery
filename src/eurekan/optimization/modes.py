@@ -515,6 +515,30 @@ def _build_planning_result(
                     add_edge("coker_1", "dht_1", "Coker GO", coker_go_dht)
                 add_edge("dht_1", "sale_diesel", "ULSD", dht_feed * 0.99)
 
+        # Aromatics Reformer: CDU HN → Aromatics Reformer → BTX + Raffinate + H2
+        if hasattr(model, "hn_to_arom"):
+            hn_arom = _safe_value(model.hn_to_arom[p])
+            btx = _safe_value(model.btx_volume[p])
+            arom_raff = _safe_value(model.arom_raffinate_vol[p])
+            if hn_arom > 1.0:
+                add_node("arom_reformer", FlowNodeType.UNIT, "Aromatics Reformer", hn_arom)
+                add_edge("cdu_1", "arom_reformer", "Heavy Naphtha", hn_arom)
+                if btx > 1.0:
+                    add_node("sale_btx", FlowNodeType.SALE_POINT, "BTX", btx)
+                    add_edge("arom_reformer", "sale_btx", "BTX Extract", btx)
+                if arom_raff > 1.0:
+                    add_edge("arom_reformer", "blend_gasoline", "Raffinate", arom_raff)
+
+        # Dimersol: FCC propylene → Dimersol → Dimate → Gasoline Blender
+        if hasattr(model, "prop_to_dimersol"):
+            prop_dim = _safe_value(model.prop_to_dimersol[p])
+            dimate = _safe_value(model.dimate_vol[p])
+            if prop_dim > 1.0:
+                add_node("dimersol", FlowNodeType.UNIT, "Dimersol", prop_dim)
+                add_edge("fcc_1", "dimersol", "Propylene", prop_dim)
+                if dimate > 1.0:
+                    add_edge("dimersol", "blend_gasoline", "Dimate", dimate)
+
         # C5/C6 Isomerization: CDU LN → C5/C6 Isom → Isomerate → Gasoline Blender
         if hasattr(model, "ln_to_isom"):
             ln_isom = _safe_value(model.ln_to_isom[p])
@@ -637,6 +661,10 @@ def _build_planning_result(
                     display = "C5/C6 Isom"
                 elif uid == "isom_c4":
                     display = "C4 Isom"
+                elif uid == "arom_reformer":
+                    display = "Aromatics Reformer"
+                elif uid == "dimersol":
+                    display = "Dimersol"
                 add_node(uid, FlowNodeType.UNIT, display, 0.0)
 
         # Potential (zero-volume) edges for idle units — shown dimmed in
@@ -683,6 +711,19 @@ def _build_planning_result(
             add_potential_edge("cdu_1", "goht_1", "VGO")
             if "fcc_1" in flow_node_ids:
                 add_potential_edge("goht_1", "fcc_1", "Treated VGO")
+
+        # Aromatics reformer topology: CDU HN → Aromatics Reformer → BTX + Raffinate
+        if "arom_reformer" in flow_node_ids:
+            add_potential_edge("cdu_1", "arom_reformer", "Heavy Naphtha")
+            if "blend_gasoline" in flow_node_ids:
+                add_potential_edge("arom_reformer", "blend_gasoline", "Raffinate")
+
+        # Dimersol topology: FCC propylene → Dimersol → Dimate
+        if "dimersol" in flow_node_ids:
+            if "fcc_1" in flow_node_ids:
+                add_potential_edge("fcc_1", "dimersol", "Propylene")
+            if "blend_gasoline" in flow_node_ids:
+                add_potential_edge("dimersol", "blend_gasoline", "Dimate")
 
         # CDU dispositions in CDU yields (cuts)
         cdu_cuts = {

@@ -226,6 +226,9 @@ PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     # Sprint 14: Light ends processing
     "CIS6": ("isom_c56", UnitType.ISOMERIZATION, "C5/C6 Isomerization"),
     "CIS4": ("isom_c4", UnitType.ISOMERIZATION, "C4 Isomerization"),
+    # Sprint 15: Aromatics reformer + Dimersol
+    "CARU": ("arom_reformer", UnitType.REFORMER, "Aromatics Reformer"),
+    "CDIM": ("dimersol", UnitType.ALKYLATION, "Dimersol"),
 }
 
 # ProcLim tag → (equipment_limit_key, description)
