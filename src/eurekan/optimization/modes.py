@@ -390,21 +390,32 @@ def _build_planning_result(
             if jet > 1.0:
                 add_node("sale_jet", FlowNodeType.SALE_POINT, "Jet", jet)
 
-        # CDU → Diesel (CDU diesel portion + kero_to_diesel)
+        # CDU → Diesel (ONLY when DHT is absent; with DHT, CDU diesel flows
+        # through diesel_to_dht and the ULSD is produced by DHT).
         kero_diesel = _safe_value(model.kero_to_diesel[p])
+        has_dht_for_diesel = hasattr(model, "diesel_to_dht")
         add_node("sale_diesel", FlowNodeType.SALE_POINT, "Diesel", diesel)
-        if diesel > 1.0:
-            # CDU diesel + kero → diesel
+        if not has_dht_for_diesel and diesel > 1.0:
+            # No DHT path: CDU diesel + kero_to_diesel go directly to sale
             cdu_diesel_direct = diesel - lco_to_diesel_val
             if cdu_diesel_direct > 1.0:
                 add_edge("cdu_1", "sale_diesel", "Diesel", cdu_diesel_direct)
 
-        # CDU → Fuel oil (VGO bypass + vacuum residue)
-        vresid = cdu_throughput * 0.07  # approximate; real value from constraints
-        fo_from_cdu = vgo_to_fo_val + max(vresid, 0)
+        # CDU → Fuel oil (VGO bypass only; vacuum residue handled in vacuum
+        # block when vacuum unit exists, or as direct CDU resid otherwise).
+        has_vacuum_for_fo = hasattr(model, "vac_feed")
         add_node("sale_fuel_oil", FlowNodeType.SALE_POINT, "Fuel Oil", fuel_oil)
-        if fo_from_cdu > 1.0:
-            add_edge("cdu_1", "sale_fuel_oil", "VGO bypass + VR", fo_from_cdu)
+        if has_vacuum_for_fo:
+            # When vacuum exists: VR that bypasses vacuum goes to fuel oil.
+            # This is (cdu_vac_resid - vac_feed). Approximate via VGO bypass only here.
+            if vgo_to_fo_val > 1.0:
+                add_edge("cdu_1", "sale_fuel_oil", "VGO bypass", vgo_to_fo_val)
+        else:
+            # No vacuum unit: CDU vac_resid goes directly to fuel oil
+            vresid = cdu_throughput * 0.07
+            fo_from_cdu = vgo_to_fo_val + max(vresid, 0)
+            if fo_from_cdu > 1.0:
+                add_edge("cdu_1", "sale_fuel_oil", "VGO bypass + VR", fo_from_cdu)
 
         # CDU → LPG
         if lpg > 1.0:
@@ -627,6 +638,51 @@ def _build_planning_result(
                 elif uid == "isom_c4":
                     display = "C4 Isom"
                 add_node(uid, FlowNodeType.UNIT, display, 0.0)
+
+        # Potential (zero-volume) edges for idle units — shown dimmed in
+        # Full Diagram mode so users can see the refinery topology.
+        # Live Flow mode filters these out via volume threshold.
+        def add_potential_edge(src: str, dst: str, name: str) -> None:
+            if src in flow_node_ids and dst in flow_node_ids:
+                # Only add if no non-zero edge already connects src -> dst
+                existing = any(
+                    e.source_node == src and e.dest_node == dst
+                    for e in flow_graph.edges
+                )
+                if not existing:
+                    add_edge(src, dst, name, 0.0)
+
+        # C4 Isom topology: nC4 → C4 Isom → iC4 → Alky
+        if "isom_c4" in flow_node_ids:
+            add_potential_edge("cdu_1", "isom_c4", "nC4")
+            if "alky_1" in flow_node_ids:
+                add_potential_edge("isom_c4", "alky_1", "iC4")
+
+        # Coker topology: Vacuum → Coker → naphtha/GO/HGO/coke
+        if "coker_1" in flow_node_ids:
+            if "vacuum_1" in flow_node_ids:
+                add_potential_edge("vacuum_1", "coker_1", "Vac Resid")
+            else:
+                add_potential_edge("cdu_1", "coker_1", "Vac Resid")
+            if "sale_naphtha" in flow_node_ids:
+                add_potential_edge("coker_1", "sale_naphtha", "Coker Naphtha")
+            if "sale_fuel_oil" in flow_node_ids:
+                add_potential_edge("coker_1", "sale_fuel_oil", "Coker HGO")
+            if "dht_1" in flow_node_ids:
+                add_potential_edge("coker_1", "dht_1", "Coker GO")
+
+        # Scanfiner topology: FCC HCN → Scanfiner → Blender
+        if "scanfiner_1" in flow_node_ids:
+            if "fcc_1" in flow_node_ids:
+                add_potential_edge("fcc_1", "scanfiner_1", "HCN")
+            if "blend_gasoline" in flow_node_ids:
+                add_potential_edge("scanfiner_1", "blend_gasoline", "Treated HCN")
+
+        # GO HT topology: CDU VGO → GO HT → FCC
+        if "goht_1" in flow_node_ids:
+            add_potential_edge("cdu_1", "goht_1", "VGO")
+            if "fcc_1" in flow_node_ids:
+                add_potential_edge("goht_1", "fcc_1", "Treated VGO")
 
         # CDU dispositions in CDU yields (cuts)
         cdu_cuts = {

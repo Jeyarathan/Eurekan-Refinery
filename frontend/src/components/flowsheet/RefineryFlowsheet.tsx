@@ -147,6 +147,9 @@ export function RefineryFlowsheet({
 
     const rfEdges: Edge[] = flow.edges
       .filter((e: FlowEdge) => visibleIds.has(e.source_node) && visibleIds.has(e.dest_node))
+      // Live Flow mode: hide zero-volume (idle / potential) edges.
+      // Full Diagram mode: show all edges, idle ones rendered dimmed.
+      .filter((e: FlowEdge) => showFullDiagram || e.volume > 1)
       .map((fe) => {
         const traceDim = highlightedNodeId != null && !connected.has(fe.edge_id)
         const isDimmed = traceDim || (showFullDiagram && fe.volume <= 1)
