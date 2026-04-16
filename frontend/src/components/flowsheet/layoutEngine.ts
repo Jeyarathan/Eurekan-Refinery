@@ -139,14 +139,14 @@ function streamColor(label: string, _sourceId: string, targetId: string): { colo
   return { color: '#94a3b8', type: 'other' }
 }
 
-// Node dimensions
-const PROD_W = 60
+// Node dimensions — UNIT_W must accommodate longest name ("Aromatics Reformer")
+const PROD_W = 65
 const PROD_H = 26
-const UNIT_W = 82
+const UNIT_W = 100
 const UNIT_H = 38
 const CDU_W = 90
 const CDU_H = 50
-const BLEND_W = 70
+const BLEND_W = 80
 const BLEND_H = 30
 
 // Product Y by name (aligned with source lane)

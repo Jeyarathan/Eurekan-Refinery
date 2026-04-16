@@ -9,7 +9,7 @@ import {
 
 import { quickOptimize } from './api/client'
 import { ConstraintPanel } from './components/diagnostics/ConstraintPanel'
-import { AlternativesPanel } from './components/optimization/AlternativesPanel'
+// AlternativesPanel removed — analysis will be in separate tabs
 import { RefineryFlowsheet } from './components/flowsheet/RefineryFlowsheet'
 import { ConversionSlider } from './components/optimization/ConversionSlider'
 import { OptimizePanel } from './components/optimization/OptimizePanel'
@@ -137,7 +137,7 @@ function App() {
                   hasResult={activeResult != null}
                 />
               </div>
-              {activeResult && <AlternativesPanel />}
+              {/* AlternativesPanel removed — analysis will be in separate tabs */}
             </>
           )}
           {activeView === 'scenarios' && <ScenariosView />}
