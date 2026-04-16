@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import type { PlanningResult } from '../../types'
-import { calculateLayout, SVG_W, SVG_H, COLS, type LayoutNode, type LayoutEdge } from './layoutEngine'
+import { calculateLayout, SVG_W, SVG_H, COLS, type LayoutNode, type LayoutEdge, type ContentBounds } from './layoutEngine'
 import { routePath, pathToSvg, pathMidpoint } from './pathRouter'
 
 // Design tokens matching reference
@@ -19,9 +19,8 @@ const SANS = "-apple-system, 'Segoe UI', system-ui, sans-serif"
 function StreamTooltip({ edge, x, y }: { edge: LayoutEdge | null; x: number; y: number }) {
   if (!edge) return null
   let tx = x + 16, ty = y - 100
-  if (tx + 260 > SVG_W) tx = x - 276
+  if (tx + 260 > x + 300) tx = x - 276
   if (ty < 5) ty = 5
-  if (ty + 160 > SVG_H) ty = SVG_H - 165
   const props = edge.properties ?? {}
   const propEntries = Object.entries(props).filter(([, v]) => v != null && v !== 0)
   return (
@@ -83,8 +82,8 @@ export function SvgFlowsheet({
   const [hovEdge, setHovEdge] = useState<string | null>(null)
   const [hovPos, setHovPos] = useState({ x: 0, y: 0 })
 
-  // Zoom/pan state
-  const [viewBox, setViewBox] = useState({ x: 0, y: -20, w: SVG_W, h: SVG_H + 40 })
+  // Zoom/pan state — initialized lazily from layout bounds
+  const [viewBox, setViewBox] = useState<ContentBounds | null>(null)
   const [isPanning, setIsPanning] = useState(false)
   const panStart = useRef({ x: 0, y: 0, vx: 0, vy: 0 })
 
@@ -96,6 +95,16 @@ export function SvgFlowsheet({
     () => calculateLayout(flow.nodes, flow.edges, fccConv, showFullDiagram),
     [flow, fccConv, showFullDiagram],
   )
+
+  // Auto-fit viewBox to content bounds whenever layout changes
+  const vb = viewBox ?? layout.bounds
+  // Reset viewBox when showFullDiagram toggles (content bounds change)
+  const prevShowFull = useRef(showFullDiagram)
+  if (prevShowFull.current !== showFullDiagram) {
+    prevShowFull.current = showFullDiagram
+    // Schedule reset on next render (can't setState during render)
+    queueMicrotask(() => setViewBox(layout.bounds))
+  }
 
   const nodeMap = useMemo(
     () => new Map(layout.nodes.map(n => [n.id, n])),
@@ -137,43 +146,46 @@ export function SvgFlowsheet({
     e.preventDefault()
     const factor = e.deltaY > 0 ? 1.1 : 0.9
     setViewBox(prev => {
-      const nw = prev.w * factor
-      const nh = prev.h * factor
-      const dx = (prev.w - nw) / 2
-      const dy = (prev.h - nh) / 2
-      return { x: prev.x + dx, y: prev.y + dy, w: nw, h: nh }
+      const p = prev ?? layout.bounds
+      const nw = p.w * factor
+      const nh = p.h * factor
+      const dx = (p.w - nw) / 2
+      const dy = (p.h - nh) / 2
+      return { x: p.x + dx, y: p.y + dy, w: nw, h: nh }
     })
-  }, [])
+  }, [layout.bounds])
 
   // Pan
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
     if ((e.target as Element).closest('[data-interactive]')) return
     setIsPanning(true)
-    panStart.current = { x: e.clientX, y: e.clientY, vx: viewBox.x, vy: viewBox.y }
-  }, [viewBox])
+    panStart.current = { x: e.clientX, y: e.clientY, vx: vb.x, vy: vb.y }
+  }, [vb])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!isPanning) return
     const svg = svgRef.current
     if (!svg) return
     const rect = svg.getBoundingClientRect()
-    const scale = viewBox.w / rect.width
+    const scale = vb.w / rect.width
     const dx = (e.clientX - panStart.current.x) * scale
     const dy = (e.clientY - panStart.current.y) * scale
-    setViewBox(prev => ({ ...prev, x: panStart.current.vx - dx, y: panStart.current.vy - dy }))
-  }, [isPanning, viewBox.w])
+    setViewBox(prev => ({ ...(prev ?? vb), x: panStart.current.vx - dx, y: panStart.current.vy - dy }))
+  }, [isPanning, vb])
 
   const handleMouseUp = useCallback(() => setIsPanning(false), [])
-  const fitView = useCallback(() => setViewBox({ x: 0, y: -20, w: SVG_W, h: SVG_H + 40 }), [])
-  const zoomIn = useCallback(() => setViewBox(v => {
-    const nw = v.w * 0.8, nh = v.h * 0.8
-    return { x: v.x + (v.w - nw) / 2, y: v.y + (v.h - nh) / 2, w: nw, h: nh }
-  }), [])
-  const zoomOut = useCallback(() => setViewBox(v => {
-    const nw = v.w * 1.25, nh = v.h * 1.25
-    return { x: v.x + (v.w - nw) / 2, y: v.y + (v.h - nh) / 2, w: nw, h: nh }
-  }), [])
+  const fitView = useCallback(() => setViewBox(layout.bounds), [layout.bounds])
+  const zoomIn = useCallback(() => setViewBox(prev => {
+    const p = prev ?? layout.bounds
+    const nw = p.w * 0.8, nh = p.h * 0.8
+    return { x: p.x + (p.w - nw) / 2, y: p.y + (p.h - nh) / 2, w: nw, h: nh }
+  }), [layout.bounds])
+  const zoomOut = useCallback(() => setViewBox(prev => {
+    const p = prev ?? layout.bounds
+    const nw = p.w * 1.25, nh = p.h * 1.25
+    return { x: p.x + (p.w - nw) / 2, y: p.y + (p.h - nh) / 2, w: nw, h: nh }
+  }), [layout.bounds])
 
   // Suppress unused variable warnings for props used by the interface contract
   void highlightedNodeId
@@ -182,7 +194,8 @@ export function SvgFlowsheet({
     <div className="relative h-full w-full overflow-hidden rounded-lg border border-slate-200 bg-white">
       <svg
         ref={svgRef}
-        viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+        viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
+        preserveAspectRatio="xMidYMid meet"
         className="block h-full w-full"
         style={{ cursor: isPanning ? 'grabbing' : 'grab' }}
         onWheel={handleWheel}
@@ -192,7 +205,7 @@ export function SvgFlowsheet({
         onMouseLeave={() => { handleMouseUp(); setHovUnit(null); setHovEdge(null) }}
       >
         {/* Background */}
-        <rect x={viewBox.x} y={viewBox.y} width={viewBox.w} height={viewBox.h} fill={C.bg} />
+        <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h} fill={C.bg} />
 
         {/* Swim lane backgrounds */}
         {layout.lanes.map(lane => (
@@ -220,16 +233,16 @@ export function SvgFlowsheet({
                 onMouseEnter={(ev) => {
                   const r = svgRef.current?.getBoundingClientRect()
                   if (r) {
-                    const scale = viewBox.w / r.width
-                    setHovPos({ x: viewBox.x + (ev.clientX - r.left) * scale, y: viewBox.y + (ev.clientY - r.top) * scale })
+                    const scale = vb.w / r.width
+                    setHovPos({ x: vb.x + (ev.clientX - r.left) * scale, y: vb.y + (ev.clientY - r.top) * scale })
                   }
                   setHovEdge(e.id)
                 }}
                 onMouseMove={(ev) => {
                   const r = svgRef.current?.getBoundingClientRect()
                   if (r) {
-                    const scale = viewBox.w / r.width
-                    setHovPos({ x: viewBox.x + (ev.clientX - r.left) * scale, y: viewBox.y + (ev.clientY - r.top) * scale })
+                    const scale = vb.w / r.width
+                    setHovPos({ x: vb.x + (ev.clientX - r.left) * scale, y: vb.y + (ev.clientY - r.top) * scale })
                   }
                 }}
                 onMouseLeave={() => setHovEdge(null)}
@@ -388,16 +401,20 @@ export function SvgFlowsheet({
       {/* Minimap (bottom-left, above legend) */}
       <div className="absolute bottom-12 left-3 rounded border border-slate-200 bg-white shadow-sm"
         style={{ width: 160, height: 100 }}>
-        <svg viewBox={`0 -20 ${SVG_W} ${SVG_H + 40}`} width={160} height={100}
-          style={{ display: 'block' }}
+        <svg viewBox={`${layout.bounds.x} ${layout.bounds.y} ${layout.bounds.w} ${layout.bounds.h}`}
+          width={160} height={100} style={{ display: 'block' }}
           onClick={(e) => {
             const r = (e.target as Element).closest('svg')?.getBoundingClientRect()
             if (!r) return
-            const sx = ((e.clientX - r.left) / r.width) * SVG_W
-            const sy = ((e.clientY - r.top) / r.height) * (SVG_H + 40) - 20
-            setViewBox(prev => ({ ...prev, x: sx - prev.w / 2, y: sy - prev.h / 2 }))
+            const b = layout.bounds
+            const sx = b.x + ((e.clientX - r.left) / r.width) * b.w
+            const sy = b.y + ((e.clientY - r.top) / r.height) * b.h
+            setViewBox(prev => {
+              const p = prev ?? b
+              return { ...p, x: sx - p.w / 2, y: sy - p.h / 2 }
+            })
           }}>
-          <rect width={SVG_W} height={SVG_H + 40} y={-20} fill={C.bg} />
+          <rect x={layout.bounds.x} y={layout.bounds.y} width={layout.bounds.w} height={layout.bounds.h} fill={C.bg} />
           {layout.lanes.map(lane => (
             <rect key={lane.id} x={lane.x} y={lane.y} width={lane.w} height={lane.h} fill={lane.bg} />
           ))}
@@ -406,7 +423,7 @@ export function SvgFlowsheet({
               fill={n.dimmed ? '#d1d5db' : '#818cf8'} rx={2} />
           ))}
           {/* Viewport rectangle */}
-          <rect x={viewBox.x} y={viewBox.y} width={viewBox.w} height={viewBox.h}
+          <rect x={vb.x} y={vb.y} width={vb.w} height={vb.h}
             fill="none" stroke={C.accent} strokeWidth={4} rx={2} opacity={0.6} />
         </svg>
       </div>

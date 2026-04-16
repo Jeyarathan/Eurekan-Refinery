@@ -59,12 +59,17 @@ export interface LayoutEdge {
   properties: Record<string, unknown>
 }
 
+export interface ContentBounds {
+  x: number; y: number; w: number; h: number
+}
+
 export interface LayoutResult {
   nodes: LayoutNode[]
   edges: LayoutEdge[]
   lanes: Array<{ id: string; label: string; x: number; y: number; w: number; h: number; bg: string }>
   trunkTop: number
   trunkBottom: number
+  bounds: ContentBounds  // bounding box of all content for viewBox
 }
 
 function fmtRate(r: number): string {
@@ -188,34 +193,52 @@ export function calculateLayout(
   const blends = flowNodes.filter(n => n.node_type === 'blend_header')
   const products = flowNodes.filter(n => n.node_type === 'sale_point')
 
-  // Crude feed nodes — active on top, inactive below (or hidden in Live Flow).
-  // With 40 crudes in Full Diagram, arrange in 2 columns to fit.
+  // Crude feed nodes — active crudes prominent on top, inactive dimmed below.
+  // Sort: active first (descending throughput), then inactive alphabetically.
   const visibleCrudes = purchases.filter(n => showFullDiagram || n.throughput > 1)
-  // Sort: active crudes first (descending throughput), then inactive alphabetically
-  const sortedCrudes = [...visibleCrudes].sort((a, b) => {
-    if (a.throughput > 1 && b.throughput <= 1) return -1
-    if (a.throughput <= 1 && b.throughput > 1) return 1
-    if (a.throughput > 1 && b.throughput > 1) return b.throughput - a.throughput
-    return a.display_name.localeCompare(b.display_name)
-  })
+  const activeCrudes = visibleCrudes.filter(n => n.throughput > 1)
+    .sort((a, b) => b.throughput - a.throughput)
+  const inactiveCrudes = visibleCrudes.filter(n => n.throughput <= 1)
+    .sort((a, b) => a.display_name.localeCompare(b.display_name))
 
-  const useTwoColumns = sortedCrudes.length > 12
-  const colSpacing = useTwoColumns ? 55 : 0    // offset for second column
-  const rowSpacing = useTwoColumns ? 16 : Math.min(30, 400 / Math.max(sortedCrudes.length, 1))
-  const itemsPerCol = useTwoColumns ? Math.ceil(sortedCrudes.length / 2) : sortedCrudes.length
-  const totalHeight = itemsPerCol * rowSpacing
-  const crudeStartY = LANES.FCC.y - totalHeight / 2
+  // Active crudes: single column, generous 32px spacing for readability
+  const ACTIVE_SPACING = 32
+  const INACTIVE_SPACING = 18
+  const COL2_OFFSET = 58  // x-offset for second column of inactive crudes
 
-  sortedCrudes.forEach((n, i) => {
-    const col = useTwoColumns ? Math.floor(i / itemsPerCol) : 0
-    const row = useTwoColumns ? (i % itemsPerCol) : i
+  // Place active crudes at top, centered vertically around FCC lane
+  const activeHeight = activeCrudes.length * ACTIVE_SPACING
+  const inactivePerCol = Math.ceil(inactiveCrudes.length / 2)
+  const inactiveHeight = inactivePerCol * INACTIVE_SPACING
+  const totalCrudeHeight = activeHeight + (inactiveCrudes.length > 0 ? 12 + inactiveHeight : 0)
+  const crudeStartY = LANES.FCC.y - Math.min(totalCrudeHeight / 2, 200)
+
+  let cy = crudeStartY
+  activeCrudes.forEach((n) => {
     nodes.push({
-      id: n.node_id, x: COLS.CRUDE + col * colSpacing, y: crudeStartY + row * rowSpacing,
+      id: n.node_id, x: COLS.CRUDE, y: cy,
       w: 14, h: 14, label: n.display_name, rate: n.throughput,
       rateStr: fmtRate(n.throughput), nodeType: 'crude',
-      dimmed: n.throughput <= 1, utilPct: 0,
+      dimmed: false, utilPct: 0,
     })
+    cy += ACTIVE_SPACING
   })
+
+  // Inactive crudes: two columns, compact spacing
+  if (inactiveCrudes.length > 0) {
+    cy += 12 // gap between active and inactive
+    const inactiveStartY = cy
+    inactiveCrudes.forEach((n, i) => {
+      const col = i < inactivePerCol ? 0 : 1
+      const row = col === 0 ? i : i - inactivePerCol
+      nodes.push({
+        id: n.node_id, x: COLS.CRUDE + col * COL2_OFFSET, y: inactiveStartY + row * INACTIVE_SPACING,
+        w: 14, h: 14, label: n.display_name, rate: n.throughput,
+        rateStr: fmtRate(n.throughput), nodeType: 'crude',
+        dimmed: true, utilPct: 0,
+      })
+    })
+  }
 
   // CDU node (special tall node)
   const cdu = flowNodes.find(n => n.node_id === 'cdu_1')
@@ -314,5 +337,27 @@ export function calculateLayout(
       }), LANES.HEAVY.y + LANES.HEAVY.h) + 10
     : LANES.HEAVY.y + LANES.HEAVY.h + 10
 
-  return { nodes, edges, lanes: visibleLanes, trunkTop, trunkBottom }
+  // Compute content bounding box from all nodes + lanes for viewBox
+  const PAD = 25
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x - 10)
+    minY = Math.min(minY, n.y - 10)
+    maxX = Math.max(maxX, n.x + n.w + 10)
+    maxY = Math.max(maxY, n.y + n.h + 10)
+  }
+  for (const l of visibleLanes) {
+    minX = Math.min(minX, l.x)
+    minY = Math.min(minY, l.y)
+    maxX = Math.max(maxX, l.x + l.w)
+    maxY = Math.max(maxY, l.y + l.h)
+  }
+  if (!isFinite(minX)) { minX = 0; minY = 0; maxX = SVG_W; maxY = SVG_H }
+  const bounds: ContentBounds = {
+    x: minX - PAD, y: minY - PAD,
+    w: (maxX - minX) + PAD * 2,
+    h: (maxY - minY) + PAD * 2,
+  }
+
+  return { nodes, edges, lanes: visibleLanes, trunkTop, trunkBottom, bounds }
 }
