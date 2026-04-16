@@ -188,13 +188,29 @@ export function calculateLayout(
   const blends = flowNodes.filter(n => n.node_type === 'blend_header')
   const products = flowNodes.filter(n => n.node_type === 'sale_point')
 
-  // Crude feed nodes (left column, stacked)
-  const activeCrudes = purchases.filter(n => showFullDiagram || n.throughput > 1)
-  const crudeSpacing = Math.min(35, 280 / Math.max(activeCrudes.length, 1))
-  const crudeStartY = LANES.FCC.y - (activeCrudes.length * crudeSpacing) / 2
-  activeCrudes.forEach((n, i) => {
+  // Crude feed nodes — active on top, inactive below (or hidden in Live Flow).
+  // With 40 crudes in Full Diagram, arrange in 2 columns to fit.
+  const visibleCrudes = purchases.filter(n => showFullDiagram || n.throughput > 1)
+  // Sort: active crudes first (descending throughput), then inactive alphabetically
+  const sortedCrudes = [...visibleCrudes].sort((a, b) => {
+    if (a.throughput > 1 && b.throughput <= 1) return -1
+    if (a.throughput <= 1 && b.throughput > 1) return 1
+    if (a.throughput > 1 && b.throughput > 1) return b.throughput - a.throughput
+    return a.display_name.localeCompare(b.display_name)
+  })
+
+  const useTwoColumns = sortedCrudes.length > 12
+  const colSpacing = useTwoColumns ? 55 : 0    // offset for second column
+  const rowSpacing = useTwoColumns ? 16 : Math.min(30, 400 / Math.max(sortedCrudes.length, 1))
+  const itemsPerCol = useTwoColumns ? Math.ceil(sortedCrudes.length / 2) : sortedCrudes.length
+  const totalHeight = itemsPerCol * rowSpacing
+  const crudeStartY = LANES.FCC.y - totalHeight / 2
+
+  sortedCrudes.forEach((n, i) => {
+    const col = useTwoColumns ? Math.floor(i / itemsPerCol) : 0
+    const row = useTwoColumns ? (i % itemsPerCol) : i
     nodes.push({
-      id: n.node_id, x: COLS.CRUDE, y: crudeStartY + i * crudeSpacing,
+      id: n.node_id, x: COLS.CRUDE + col * colSpacing, y: crudeStartY + row * rowSpacing,
       w: 14, h: 14, label: n.display_name, rate: n.throughput,
       rateStr: fmtRate(n.throughput), nodeType: 'crude',
       dimmed: n.throughput <= 1, utilPct: 0,

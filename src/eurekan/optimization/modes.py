@@ -233,6 +233,13 @@ def _build_planning_result(
                 add_node(f"crude_{cid}", FlowNodeType.PURCHASE, cid, rate)
                 add_edge(f"crude_{cid}", "cdu_1", cid, rate)
 
+        # Always add all configured crudes (even if not selected by optimizer)
+        # so Full Diagram mode can show the full feedstock menu.
+        for cid in config.crude_library.list_crudes():
+            node_id = f"crude_{cid}"
+            if node_id not in flow_node_ids:
+                add_node(node_id, FlowNodeType.PURCHASE, cid, 0.0)
+
         # CDU node — throughput is the total crude rate
         add_node("cdu_1", FlowNodeType.UNIT, "CDU 1", cdu_throughput)
 
