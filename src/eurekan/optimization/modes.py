@@ -1092,11 +1092,12 @@ def _build_planning_result(
         if v > 0.1:
             h2_consumers.append(("dht_1", v, "H2"))
     if hasattr(model, "vgo_to_hcu") and hasattr(model, "hcu_conversion"):
-        # Flat 2000 SCFB for HCU net treat gas — the earlier conversion-linked
-        # formula (1500 + 30·(conv − 60)) escalated to ~2550 SCFB at conv=95,
-        # roughly 25% above a typical net-consumption range and inflating the
-        # header draw past realistic plant values.
-        hcu_scfb = 2000.0
+        # Flat 1000 SCFB for HCU net chemical hydrogen consumption. The
+        # header represents make-up H2 (what the refinery actually imports
+        # from the SMR/H2 plant), not treat-gas circulation. Typical net
+        # chemical uptake is 500–1000 SCFB; the full treat-gas figure
+        # (2000+ SCFB) would be correct if the header were a recycle loop.
+        hcu_scfb = 1000.0
         v = _safe_value(model.vgo_to_hcu[p0]) * hcu_scfb / 5600.0
         if v > 0.1:
             h2_consumers.append(("hcu_1", v, "H2"))
@@ -1109,16 +1110,18 @@ def _build_planning_result(
     if (h2_sources or h2_plant_v > 0.1) and h2_consumers:
         total_supply = sum(v for _, _, v, _ in h2_sources) + h2_plant_v
         total_demand = sum(v for _, v, _ in h2_consumers)
-        # Header throughput = actual hydrogen flowing through the bus. Use
-        # total demand because consumers define the draw; physical supply
-        # formulas may under-state what the model's inflated H2 balance
-        # permits, but demand is always grounded in feed × SCFB.
+        # Header throughput shows ONE side (consumers only) — never the
+        # supply + demand sum. The bus is a balanced junction, so
+        # producers_in == consumers_out in the physical limit; showing
+        # either side alone is the correct display, and we pick demand
+        # because it's grounded in feed × SCFB and matches the plant
+        # operator's mental model (how much H2 the refinery draws).
         flow_graph.nodes.append(
             FlowNode(
                 node_id="h2_header",
                 node_type=FlowNodeType.BLEND_HEADER,
                 display_name="H2 Header",
-                throughput=max(total_supply, total_demand),
+                throughput=total_demand,
             )
         )
         if h2_plant_v > 0.1:
