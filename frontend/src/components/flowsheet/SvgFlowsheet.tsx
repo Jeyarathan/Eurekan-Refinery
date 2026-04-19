@@ -216,9 +216,12 @@ export function SvgFlowsheet({
           </g>
         ))}
 
-        {/* CDU trunk line */}
+        {/* CDU trunk line — vertical bundling line at COLS.TRUNK where all
+             CDU outputs exit right and fan horizontally to downstream units.
+             Rendered with solid mid-gray at ~0.5 opacity so it reads as an
+             intentional plant-topology element, not a ghosted background. */}
         <path d={`M${COLS.TRUNK},${layout.trunkTop} L${COLS.TRUNK},${layout.trunkBottom}`}
-          stroke="#94a3b8" strokeWidth={3} strokeLinecap="round" opacity={0.06} />
+          stroke="#64748b" strokeWidth={3} strokeLinecap="round" opacity={0.5} />
 
         {/* Stream edges */}
         {edgePaths.map(e => {
@@ -247,11 +250,14 @@ export function SvgFlowsheet({
                 }}
                 onMouseLeave={() => setHovEdge(null)}
               />
-              {/* Visible path */}
+              {/* Visible path — utility / H2 / potential streams all render
+                   dashed with distinct opacity so they read as non-liquid
+                   flows against the main material balance. */}
               <path d={e.d} fill="none" stroke={e.color}
-                strokeWidth={hovEdge === e.id ? w + 1.5 : w}
+                strokeWidth={hovEdge === e.id ? w + 1.5 : (e.streamType === 'utility' || e.streamType === 'potential' ? 1.5 : (e.streamType === 'h2' ? 2 : w))}
                 strokeLinecap="round" strokeLinejoin="round"
-                opacity={anyHov ? (hi ? 0.8 : 0.06) : 0.4}
+                strokeDasharray={e.streamType === 'utility' ? '4 3' : (e.streamType === 'potential' ? '5 4' : (e.streamType === 'h2' ? '6 3' : undefined))}
+                opacity={anyHov ? (hi ? 0.8 : 0.06) : (e.streamType === 'utility' ? 0.5 : (e.streamType === 'potential' ? 0.22 : (e.streamType === 'h2' ? 0.7 : 0.4)))}
                 style={{ transition: 'opacity 0.2s', pointerEvents: 'none' }}
               />
               {/* Volume label on hover */}
@@ -266,14 +272,24 @@ export function SvgFlowsheet({
           )
         })}
 
-        {/* Crude feed nodes */}
+        {/* Crude feed nodes.
+            Active crudes: rate label LEFT of dot (clear of the horizontal
+              feed edge that exits rightward into the CDU); code label RIGHT.
+            Inactive crudes: code only, smaller font, tighter dot. */}
         {layout.nodes.filter(n => n.nodeType === 'crude').map(n => {
-          const op = anyHov && !isNodeHighlighted(n) ? 0.15 : (n.dimmed ? 0.4 : 1)
+          const op = anyHov && !isNodeHighlighted(n) ? 0.15 : (n.dimmed ? 0.45 : 1)
+          const labelFont = n.dimmed ? 9 : 10
+          const dotR = n.dimmed ? 5 : 7
           return (
             <g key={n.id} opacity={op} style={{ transition: 'opacity 0.2s' }}>
-              <circle cx={n.x + 7} cy={n.y + 7} r={7} fill="#f59e0b" stroke="#fff" strokeWidth={2} />
-              <text x={n.x + 20} y={n.y + 3} fill={C.text} fontSize={10} fontWeight={700}>{n.label}</text>
-              <text x={n.x + 20} y={n.y + 15} fill={C.textDim} fontSize={9} fontFamily={MONO}>{n.rateStr}</text>
+              <circle cx={n.x + 7} cy={n.y + 7} r={dotR} fill="#f59e0b" stroke="#fff"
+                strokeWidth={n.dimmed ? 1 : 2} />
+              {!n.dimmed && n.rateStr && (
+                <text x={n.x - 4} y={n.y + 11} textAnchor="end" fill={C.text}
+                  fontSize={10} fontWeight={700} fontFamily={MONO}>{n.rateStr}</text>
+              )}
+              <text x={n.x + 18} y={n.y + 11} fill={n.dimmed ? C.textDim : C.text}
+                fontSize={labelFont} fontWeight={n.dimmed ? 500 : 700}>{n.label}</text>
             </g>
           )
         })}
@@ -329,20 +345,27 @@ export function SvgFlowsheet({
           )
         })}
 
-        {/* Blend header nodes */}
+        {/* Blend header (pool) nodes — compact per-product, one per finished
+            product. Label on top, throughput beneath, 4 spec placeholder dots
+            at the bottom. */}
         {layout.nodes.filter(n => n.nodeType === 'blend').map(n => {
           const op = anyHov && !isNodeHighlighted(n) ? 0.12 : 1
           const isHov = hovUnit === n.id
+          const dotSpacing = (n.w - 20) / 3
           return (
             <g key={n.id} opacity={op} style={{ transition: 'opacity 0.2s', cursor: 'pointer' }}
               data-interactive="true"
               onMouseEnter={() => setHovUnit(n.id)} onMouseLeave={() => setHovUnit(null)}>
               <rect x={n.x} y={n.y} width={n.w} height={n.h} rx={5}
-                fill={C.greenLight} stroke={C.greenBorder} strokeWidth={isHov ? 2 : 1} />
-              <text x={n.x + n.w / 2} y={n.y + n.h / 2 + 1} textAnchor="middle" dominantBaseline="middle"
-                fill={C.text} fontSize={9} fontWeight={600}>
-                {n.label} <tspan fill={C.textDim} fontFamily={MONO}>{n.rateStr}</tspan>
-              </text>
+                fill={C.greenLight} stroke={C.greenBorder} strokeWidth={isHov ? 1.75 : 1} />
+              <text x={n.x + n.w / 2} y={n.y + 11} textAnchor="middle"
+                fill={C.text} fontSize={9} fontWeight={700}>{n.label}</text>
+              <text x={n.x + n.w / 2} y={n.y + 21} textAnchor="middle"
+                fill={C.green} fontSize={9} fontFamily={MONO} fontWeight={700}>{n.rateStr}</text>
+              {[0, 1, 2, 3].map(i => (
+                <circle key={i} cx={n.x + 10 + i * dotSpacing} cy={n.y + n.h - 5}
+                  r={1.5} fill={C.white} stroke={C.greenBorder} strokeWidth={0.8} />
+              ))}
             </g>
           )
         })}

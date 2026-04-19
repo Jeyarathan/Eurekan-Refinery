@@ -22,6 +22,7 @@ class FlowNodeType(str, Enum):
     BLEND_HEADER = "blend_header"
     SALE_POINT = "sale_point"
     TANK = "tank"
+    PROCESS = "process"  # Internal processing / utility node (e.g. Plant Fuel System)
 
 
 class FlowNode(BaseModel):

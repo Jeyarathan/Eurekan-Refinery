@@ -31,6 +31,18 @@ import pyomo.environ as pyo
 
 from eurekan.core.config import RefineryConfig
 from eurekan.core.period import PlanDefinition
+from eurekan.models.gas_plant import (
+    SGP_FUEL_GAS_FRAC,
+    SGP_ISOBUTANE_FRAC,
+    SGP_NORMAL_BUTANE_FRAC,
+    SGP_PROPANE_FRAC,
+    UGP_BUTYLENE_FRAC,
+    UGP_FUEL_GAS_FRAC,
+    UGP_ISOBUTANE_FRAC,
+    UGP_NORMAL_BUTANE_FRAC,
+    UGP_PROPANE_FRAC,
+    UGP_PROPYLENE_FRAC,
+)
 
 # ---------------------------------------------------------------------------
 # Defaults — used when the config or period doesn't specify a value
@@ -73,6 +85,10 @@ _AROM_H2_WT = 0.045        # 4.5 wt% H2
 _AROM_LPG_YIELD = 0.6 * (1.0 - 0.45 - 0.40 - 0.045)  # LPG fraction of remainder
 _DIMERSOL_OPEX = 2.0       # $/bbl dimersol feed
 _DIMERSOL_YIELD = 0.90     # 90% dimate yield
+
+# Sprint 16: Gas plants (Unsaturated + Saturated)
+_UGP_OPEX = 0.50           # $/bbl UGP feed (fractionation energy)
+_SGP_OPEX = 0.30           # $/bbl SGP feed (fractionation energy)
 _BTX_PRICE_PER_TON = 900.0  # $/ton BTX petchem (midpoint of $800-1200)
 _BBL_TO_TON_BTX = 0.870 * 0.159  # spg 0.87, 0.159 m3/bbl
 
@@ -229,6 +245,15 @@ class PyomoModelBuilder:
         self.has_dimersol = dim_unit is not None
         self.dimersol_capacity = dim_unit.capacity if dim_unit else 0.0
 
+        # Sprint 16: Gas plants (Unsaturated + Saturated)
+        ugp_unit = config.units.get("ugp_1")
+        self.has_ugp = ugp_unit is not None
+        self.ugp_capacity = ugp_unit.capacity if ugp_unit else 0.0
+
+        sgp_unit = config.units.get("sgp_1")
+        self.has_sgp = sgp_unit is not None
+        self.sgp_capacity = sgp_unit.capacity if sgp_unit else 0.0
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -268,6 +293,10 @@ class PyomoModelBuilder:
             self._add_arom_constraints(m)
         if self.has_dimersol:
             self._add_dimersol_constraints(m)
+        if self.has_ugp:
+            self._add_ugp_constraints(m)
+        if self.has_sgp:
+            self._add_sgp_constraints(m)
         self._add_hydrogen_balance(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
@@ -390,6 +419,31 @@ class PyomoModelBuilder:
         if self.has_dimersol:
             m.prop_to_dimersol = pyo.Var(m.PERIODS, bounds=(0.0, self.dimersol_capacity), initialize=0.0)
             m.dimate_vol = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Unsaturated Gas Plant variables (Sprint 16) ---
+        # UGP separates FCC C3/C4 pool into individual components. Gives
+        # optimizer visibility into propylene/butylenes/iC4/nC4 vs. lumped LPG.
+        if self.has_ugp:
+            m.ugp_feed = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            for var_name in [
+                "ugp_propylene_vol", "ugp_propane_vol", "ugp_butylene_vol",
+                "ugp_ic4_vol", "ugp_nc4_vol", "ugp_fuel_gas_vol",
+                "ugp_ic4_to_alky", "ugp_ic4_to_lpg",
+                "ugp_nc4_to_c4isom", "ugp_nc4_to_lpg",
+            ]:
+                setattr(m, var_name, pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0))
+
+        # --- Saturated Gas Plant variables (Sprint 16) ---
+        # SGP separates CDU + coker + HCU paraffin streams. Produces more
+        # iC4 and nC4 that previously were lumped into the LPG pool.
+        if self.has_sgp:
+            m.sgp_feed = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            for var_name in [
+                "sgp_propane_vol", "sgp_ic4_vol", "sgp_nc4_vol", "sgp_fuel_gas_vol",
+                "sgp_ic4_to_alky", "sgp_ic4_to_lpg",
+                "sgp_nc4_to_c4isom", "sgp_nc4_to_lpg",
+            ]:
+                setattr(m, var_name, pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0))
 
         # --- C4 Isomerization variables (Sprint 14) ---
         # nC4 feed (from CDU + FCC), produces iC4 for alkylation
@@ -624,23 +678,41 @@ class PyomoModelBuilder:
     def _add_alkylation_constraints(self, m: pyo.ConcreteModel) -> None:
         """Alkylation: olefins → alkylate at 1.75× yield, requires iC4."""
         has_isomc4 = self.has_isomc4
+        has_ugp = self.has_ugp
+        has_sgp = self.has_sgp
+        has_dim = self.has_dimersol
 
         def alky_yield_rule(m: Any, p: int) -> Any:
             return m.alkylate_volume[p] == m.c3c4_to_alky[p] * 1.75
 
         m.alky_yield_def = pyo.Constraint(m.PERIODS, rule=alky_yield_rule)
 
-        # iC4 requirement: 1.1× olefin feed. Supply = ic4_purchased + ic4_from_c4isom.
+        # iC4 requirement: 1.1× olefin feed. Supply = ic4_purchased + ic4_from_c4isom
+        # plus UGP/SGP iC4 (when gas plants are present, these provide a
+        # natural paraffin source that previously was lumped into LPG sales).
         def alky_ic4_rule(m: Any, p: int) -> Any:
             supply = m.ic4_purchased[p]
             if has_isomc4:
                 supply += m.ic4_from_c4isom[p]
+            if has_ugp:
+                supply += m.ugp_ic4_to_alky[p]
+            if has_sgp:
+                supply += m.sgp_ic4_to_alky[p]
             return supply >= m.c3c4_to_alky[p] * 1.1
 
         m.alky_ic4_con = pyo.Constraint(m.PERIODS, rule=alky_ic4_rule)
 
-        # Feed limit: can't send more C3/C4 than FCC produces
+        # Feed limit: olefins available for alky + dimersol.
+        # Without UGP: approximated as FCC C3+C4 pool (lumped).
+        # With UGP: exact olefin pool = propylene + butylenes (C3/C4 paraffins
+        # separated out by the gas plant and routed elsewhere).
         def alky_feed_rule(m: Any, p: int) -> Any:
+            if has_ugp:
+                olefins = m.ugp_propylene_vol[p] + m.ugp_butylene_vol[p]
+                demand = m.c3c4_to_alky[p]
+                if has_dim:
+                    demand += m.prop_to_dimersol[p]
+                return demand <= olefins
             return m.c3c4_to_alky[p] <= m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
 
         m.alky_feed_con = pyo.Constraint(m.PERIODS, rule=alky_feed_rule)
@@ -806,15 +878,29 @@ class PyomoModelBuilder:
     # ------------------------------------------------------------------
 
     def _add_isomc4_constraints(self, m: pyo.ConcreteModel) -> None:
-        """C4 isom: nC4 -> iC4 at 95% yield (with recycle)."""
+        """C4 isom: nC4 -> iC4 at 95% yield (with recycle).
+
+        Feed sources: CDU nC4 (via nc4_to_c4isom) plus — when gas plants exist —
+        UGP nC4 (from FCC C4 pool) and SGP nC4 (from CDU/coker/HCU streams).
+        """
         cap = self.isomc4_capacity
+        has_ugp = self.has_ugp
+        has_sgp = self.has_sgp
+
+        def _total_feed(m: Any, p: int) -> Any:
+            total = m.nc4_to_c4isom[p]
+            if has_ugp:
+                total += m.ugp_nc4_to_c4isom[p]
+            if has_sgp:
+                total += m.sgp_nc4_to_c4isom[p]
+            return total
 
         def cap_rule(m: Any, p: int) -> Any:
-            return m.nc4_to_c4isom[p] <= cap
+            return _total_feed(m, p) <= cap
         m.isomc4_capacity_con = pyo.Constraint(m.PERIODS, rule=cap_rule)
 
         def yield_rule(m: Any, p: int) -> Any:
-            return m.ic4_from_c4isom[p] == m.nc4_to_c4isom[p] * _ISOMC4_IC4_YIELD
+            return m.ic4_from_c4isom[p] == _total_feed(m, p) * _ISOMC4_IC4_YIELD
         m.isomc4_yield_def = pyo.Constraint(m.PERIODS, rule=yield_rule)
 
     # ------------------------------------------------------------------
@@ -863,13 +949,148 @@ class PyomoModelBuilder:
         m.dimersol_yield_def = pyo.Constraint(m.PERIODS, rule=yield_rule)
 
         # Propylene feed must come from FCC C3 stream (after alkylation takes its share)
-        # FCC c3 is half the C3/C4 (the propylene portion). Alky takes c3c4 mixed.
-        # Simplified: dimersol feed + (propylene to alky) <= fcc_c3_vol
-        # We approximate by using fcc_c3_vol as the propylene pool.
+        # Without UGP: approximated by fcc_c3_vol (the propylene pool).
+        # With UGP: exact propylene stream from the gas plant. Competition
+        # with alkylation for propylene is enforced in alky_feed_con.
+        has_ugp = self.has_ugp
+
         def feed_rule(m: Any, p: int) -> Any:
-            # Rough: total propylene <= fcc C3 stream
+            if has_ugp:
+                return m.prop_to_dimersol[p] <= m.ugp_propylene_vol[p]
             return m.prop_to_dimersol[p] <= m.fcc_c3_vol[p]
         m.dimersol_feed_con = pyo.Constraint(m.PERIODS, rule=feed_rule)
+
+    # ------------------------------------------------------------------
+    # Unsaturated Gas Plant constraints (Sprint 16)
+    # ------------------------------------------------------------------
+
+    def _add_ugp_constraints(self, m: pyo.ConcreteModel) -> None:
+        """UGP: FCC C3/C4 pool → propylene + propane + butylene + iC4 + nC4 + fuel gas."""
+        ugp_cap = self.ugp_capacity
+
+        # UGP feed = all FCC C3 + C4 (light ends from the cat cracker)
+        def ugp_feed_rule(m: Any, p: int) -> Any:
+            return m.ugp_feed[p] == m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
+        m.ugp_feed_def = pyo.Constraint(m.PERIODS, rule=ugp_feed_rule)
+
+        # Optional capacity limit — only enforced if capacity > 0
+        if ugp_cap > 0.0:
+            def ugp_cap_rule(m: Any, p: int) -> Any:
+                return m.ugp_feed[p] <= ugp_cap
+            m.ugp_capacity_con = pyo.Constraint(m.PERIODS, rule=ugp_cap_rule)
+
+        # Yield constraints — linear split fractions from gas_plant module
+        def ugp_propylene_rule(m: Any, p: int) -> Any:
+            return m.ugp_propylene_vol[p] == m.ugp_feed[p] * UGP_PROPYLENE_FRAC
+        m.ugp_propylene_def = pyo.Constraint(m.PERIODS, rule=ugp_propylene_rule)
+
+        def ugp_propane_rule(m: Any, p: int) -> Any:
+            return m.ugp_propane_vol[p] == m.ugp_feed[p] * UGP_PROPANE_FRAC
+        m.ugp_propane_def = pyo.Constraint(m.PERIODS, rule=ugp_propane_rule)
+
+        def ugp_butylene_rule(m: Any, p: int) -> Any:
+            return m.ugp_butylene_vol[p] == m.ugp_feed[p] * UGP_BUTYLENE_FRAC
+        m.ugp_butylene_def = pyo.Constraint(m.PERIODS, rule=ugp_butylene_rule)
+
+        def ugp_ic4_rule(m: Any, p: int) -> Any:
+            return m.ugp_ic4_vol[p] == m.ugp_feed[p] * UGP_ISOBUTANE_FRAC
+        m.ugp_ic4_def = pyo.Constraint(m.PERIODS, rule=ugp_ic4_rule)
+
+        def ugp_nc4_rule(m: Any, p: int) -> Any:
+            return m.ugp_nc4_vol[p] == m.ugp_feed[p] * UGP_NORMAL_BUTANE_FRAC
+        m.ugp_nc4_def = pyo.Constraint(m.PERIODS, rule=ugp_nc4_rule)
+
+        def ugp_fuel_gas_rule(m: Any, p: int) -> Any:
+            return m.ugp_fuel_gas_vol[p] == m.ugp_feed[p] * UGP_FUEL_GAS_FRAC
+        m.ugp_fuel_gas_def = pyo.Constraint(m.PERIODS, rule=ugp_fuel_gas_rule)
+
+        # iC4 disposition: alky feed OR LPG sale
+        def ugp_ic4_split_rule(m: Any, p: int) -> Any:
+            return m.ugp_ic4_to_alky[p] + m.ugp_ic4_to_lpg[p] == m.ugp_ic4_vol[p]
+        m.ugp_ic4_split = pyo.Constraint(m.PERIODS, rule=ugp_ic4_split_rule)
+
+        # nC4 disposition: C4 isom feed OR LPG sale
+        def ugp_nc4_split_rule(m: Any, p: int) -> Any:
+            return m.ugp_nc4_to_c4isom[p] + m.ugp_nc4_to_lpg[p] == m.ugp_nc4_vol[p]
+        m.ugp_nc4_split = pyo.Constraint(m.PERIODS, rule=ugp_nc4_split_rule)
+
+        # If no C4 isom exists, UGP nC4 can't go there
+        if not self.has_isomc4:
+            def ugp_nc4_no_isom_rule(m: Any, p: int) -> Any:
+                return m.ugp_nc4_to_c4isom[p] == 0.0
+            m.ugp_nc4_no_isom_con = pyo.Constraint(m.PERIODS, rule=ugp_nc4_no_isom_rule)
+
+        # If no alky exists, UGP iC4 can't go there
+        if not self.has_alky:
+            def ugp_ic4_no_alky_rule(m: Any, p: int) -> Any:
+                return m.ugp_ic4_to_alky[p] == 0.0
+            m.ugp_ic4_no_alky_con = pyo.Constraint(m.PERIODS, rule=ugp_ic4_no_alky_rule)
+
+    # ------------------------------------------------------------------
+    # Saturated Gas Plant constraints (Sprint 16)
+    # ------------------------------------------------------------------
+
+    def _add_sgp_constraints(self, m: pyo.ConcreteModel) -> None:
+        """SGP: CDU/coker/HCU paraffin streams → propane + iC4 + nC4 + fuel gas."""
+        sgp_cap = self.sgp_capacity
+        has_coker = self.has_coker
+        has_hcu = self.has_hcu
+
+        # SGP feed = CDU non-nC4 LPG + coker gas + HCU LPG (saturated streams only)
+        # The non-nC4 CDU LPG fraction was previously lumped straight into LPG
+        # sales; now it gets fractionated into propane/iC4/nC4 for proper
+        # allocation (alky feed iC4, C4 isom feed nC4, or LPG sale propane).
+        def sgp_feed_rule(m: Any, p: int) -> Any:
+            cdu_non_nc4 = (1.0 - _NC4_FRACTION_OF_LPG) * self._cdu_cut_volume(m, "lpg", p)
+            total = cdu_non_nc4
+            if has_coker:
+                total += m.coker_gas_vol[p]
+            if has_hcu:
+                total += m.hcu_lpg_vol[p]
+            return m.sgp_feed[p] == total
+        m.sgp_feed_def = pyo.Constraint(m.PERIODS, rule=sgp_feed_rule)
+
+        if sgp_cap > 0.0:
+            def sgp_cap_rule(m: Any, p: int) -> Any:
+                return m.sgp_feed[p] <= sgp_cap
+            m.sgp_capacity_con = pyo.Constraint(m.PERIODS, rule=sgp_cap_rule)
+
+        # Yield constraints — linear splits from gas_plant module
+        def sgp_propane_rule(m: Any, p: int) -> Any:
+            return m.sgp_propane_vol[p] == m.sgp_feed[p] * SGP_PROPANE_FRAC
+        m.sgp_propane_def = pyo.Constraint(m.PERIODS, rule=sgp_propane_rule)
+
+        def sgp_ic4_rule(m: Any, p: int) -> Any:
+            return m.sgp_ic4_vol[p] == m.sgp_feed[p] * SGP_ISOBUTANE_FRAC
+        m.sgp_ic4_def = pyo.Constraint(m.PERIODS, rule=sgp_ic4_rule)
+
+        def sgp_nc4_rule(m: Any, p: int) -> Any:
+            return m.sgp_nc4_vol[p] == m.sgp_feed[p] * SGP_NORMAL_BUTANE_FRAC
+        m.sgp_nc4_def = pyo.Constraint(m.PERIODS, rule=sgp_nc4_rule)
+
+        def sgp_fuel_gas_rule(m: Any, p: int) -> Any:
+            return m.sgp_fuel_gas_vol[p] == m.sgp_feed[p] * SGP_FUEL_GAS_FRAC
+        m.sgp_fuel_gas_def = pyo.Constraint(m.PERIODS, rule=sgp_fuel_gas_rule)
+
+        # iC4 disposition: alky feed OR LPG sale
+        def sgp_ic4_split_rule(m: Any, p: int) -> Any:
+            return m.sgp_ic4_to_alky[p] + m.sgp_ic4_to_lpg[p] == m.sgp_ic4_vol[p]
+        m.sgp_ic4_split = pyo.Constraint(m.PERIODS, rule=sgp_ic4_split_rule)
+
+        # nC4 disposition: C4 isom feed OR LPG sale
+        def sgp_nc4_split_rule(m: Any, p: int) -> Any:
+            return m.sgp_nc4_to_c4isom[p] + m.sgp_nc4_to_lpg[p] == m.sgp_nc4_vol[p]
+        m.sgp_nc4_split = pyo.Constraint(m.PERIODS, rule=sgp_nc4_split_rule)
+
+        if not self.has_isomc4:
+            def sgp_nc4_no_isom_rule(m: Any, p: int) -> Any:
+                return m.sgp_nc4_to_c4isom[p] == 0.0
+            m.sgp_nc4_no_isom_con = pyo.Constraint(m.PERIODS, rule=sgp_nc4_no_isom_rule)
+
+        if not self.has_alky:
+            def sgp_ic4_no_alky_rule(m: Any, p: int) -> Any:
+                return m.sgp_ic4_to_alky[p] == 0.0
+            m.sgp_ic4_no_alky_con = pyo.Constraint(m.PERIODS, rule=sgp_ic4_no_alky_rule)
 
     # ------------------------------------------------------------------
     # Hydrogen balance
@@ -1158,26 +1379,59 @@ class PyomoModelBuilder:
 
         m.fuel_oil_def = pyo.Constraint(m.PERIODS, rule=fuel_oil_def)
 
-        # LPG pool = CDU LPG + nc4_to_lpg + FCC C3/C4 + reformer LPG + HCU LPG
-        #          + aromatics reformer LPG
-        # - C3/C4 to alky - propylene to dimersol
+        # LPG pool:
+        #   Without gas plants — aggregate FCC C3/C4, CDU non-nC4 LPG, HCU LPG etc
+        #   directly, and subtract alky/dimersol consumption from the pool.
+        #   With UGP (FCC C3/C4 path) — replace fcc_c3/c4 + alky/dim subtraction
+        #   with UGP propane + iC4-to-LPG + nC4-to-LPG (exact accounting).
+        #   With SGP (CDU/coker/HCU paraffin path) — replace cdu_non_nc4 +
+        #   hcu_lpg with SGP propane + iC4-to-LPG + nC4-to-LPG. When SGP is
+        #   active, coker_gas_vol becomes a real LPG-producing stream (it
+        #   was previously unaccounted for).
         has_hcu_l = self.has_hcu
         has_arom_l = self.has_arom
         has_dim_l = self.has_dimersol
+        has_ugp_l = self.has_ugp
+        has_sgp_l = self.has_sgp
 
         def lpg_def(m: Any, p: int) -> Any:
             cdu_non_nc4 = (1.0 - _NC4_FRACTION_OF_LPG) * self._cdu_cut_volume(m, "lpg", p)
-            total = cdu_non_nc4 + m.nc4_to_lpg[p] + m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
+
+            # nC4 routed to LPG sale (from CDU disposition path)
+            total = m.nc4_to_lpg[p]
+
+            # Add reformer + aromatics reformer LPG unchanged
             if has_ref:
                 total += m.reformer_lpg[p]
-            if has_hcu_l:
-                total += m.hcu_lpg_vol[p]
             if has_arom_l:
                 total += m.arom_lpg[p]
-            if has_alky:
-                total -= m.c3c4_to_alky[p]
-            if has_dim_l:
-                total -= m.prop_to_dimersol[p]
+
+            # UGP replaces FCC C3/C4 direct path
+            if has_ugp_l:
+                total += (
+                    m.ugp_propane_vol[p]
+                    + m.ugp_ic4_to_lpg[p]
+                    + m.ugp_nc4_to_lpg[p]
+                )
+            else:
+                total += m.fcc_c3_vol[p] + m.fcc_c4_vol[p]
+                if has_alky:
+                    total -= m.c3c4_to_alky[p]
+                if has_dim_l:
+                    total -= m.prop_to_dimersol[p]
+
+            # SGP replaces CDU non-nC4 + HCU LPG direct path
+            if has_sgp_l:
+                total += (
+                    m.sgp_propane_vol[p]
+                    + m.sgp_ic4_to_lpg[p]
+                    + m.sgp_nc4_to_lpg[p]
+                )
+            else:
+                total += cdu_non_nc4
+                if has_hcu_l:
+                    total += m.hcu_lpg_vol[p]
+
             return m.lpg_volume[p] == total
 
         m.lpg_def = pyo.Constraint(m.PERIODS, rule=lpg_def)
@@ -1521,6 +1775,10 @@ class PyomoModelBuilder:
                     extra_credit += m.arom_hydrogen[p] * 1.5  # $1.50/MSCF H2
                 if self.has_dimersol:
                     extra_opex += m.prop_to_dimersol[p] * _DIMERSOL_OPEX
+                if self.has_ugp:
+                    extra_opex += m.ugp_feed[p] * _UGP_OPEX
+                if self.has_sgp:
+                    extra_opex += m.sgp_feed[p] * _SGP_OPEX
                 extra_opex += m.h2_purchased[p] * 1500.0           # $1.50/MSCF × 1000
 
                 margin = (

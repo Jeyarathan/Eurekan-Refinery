@@ -227,8 +227,19 @@ PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     "CIS6": ("isom_c56", UnitType.ISOMERIZATION, "C5/C6 Isomerization"),
     "CIS4": ("isom_c4", UnitType.ISOMERIZATION, "C4 Isomerization"),
     # Sprint 15: Aromatics reformer + Dimersol
-    "CARU": ("arom_reformer", UnitType.REFORMER, "Aromatics Reformer"),
+    "CARU": ("arom_reformer", UnitType.REFORMER, "Arom Reformer"),
     "CDIM": ("dimersol", UnitType.ALKYLATION, "Dimersol"),
+    # Sprint 16: Unsaturated + Saturated Gas Plants
+    # SUGP/SSGP are the user-facing tag names; CUCP/CSCP are the actual
+    # PIMS Gulf Coast workbook tags (Unsat / Sat Cut Plant). Either
+    # activates the gas plant nodes — no specific capacity needed.
+    "SUGP": ("ugp_1", UnitType.GAS_PLANT, "Unsaturated Gas Plant"),
+    "CUCP": ("ugp_1", UnitType.GAS_PLANT, "Unsaturated Gas Plant"),
+    "SSGP": ("sgp_1", UnitType.GAS_PLANT, "Saturated Gas Plant"),
+    "CSCP": ("sgp_1", UnitType.GAS_PLANT, "Saturated Gas Plant"),
+    # Plant Fuel System — utility sink for fuel gas (C1/C2) collection.
+    "SPFS": ("pfs_1", UnitType.UTILITY, "Plant Fuel Sys"),
+    "CPFS": ("pfs_1", UnitType.UTILITY, "Plant Fuel Sys"),
 }
 
 # ProcLim tag → (equipment_limit_key, description)

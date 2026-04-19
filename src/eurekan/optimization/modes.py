@@ -407,6 +407,12 @@ def _build_planning_result(
             cdu_diesel_direct = diesel - lco_to_diesel_val
             if cdu_diesel_direct > 1.0:
                 add_edge("cdu_1", "sale_diesel", "Diesel", cdu_diesel_direct)
+        elif has_dht_for_diesel and kero_diesel > 1.0:
+            # With DHT: kero_to_diesel bypasses DHT and goes to diesel pool
+            # directly (builder.py diesel_def: total = dht_output + kero_to_diesel
+            # + hcu_diesel). Emit the bypass edge so the pool volume matches
+            # the sale volume.
+            add_edge("cdu_1", "sale_diesel", "Kero to Diesel", kero_diesel)
 
         # CDU → Fuel oil (VGO bypass only; vacuum residue handled in vacuum
         # block when vacuum unit exists, or as direct CDU resid otherwise).
@@ -424,14 +430,20 @@ def _build_planning_result(
             if fo_from_cdu > 1.0:
                 add_edge("cdu_1", "sale_fuel_oil", "VGO bypass + VR", fo_from_cdu)
 
-        # CDU → LPG
+        # CDU → LPG.  Only draw the direct CDU→sale_lpg edge when neither
+        # SGP nor UGP is present — otherwise CDU light ends flow through SGP
+        # and FCC C3/C4 flows through UGP, and drawing a direct edge here
+        # would double-count the volume into pool_lpg.
+        has_sgp_lpg = hasattr(model, "sgp_feed")
+        has_ugp_lpg = hasattr(model, "ugp_feed")
         if lpg > 1.0:
             add_node("sale_lpg", FlowNodeType.SALE_POINT, "LPG", lpg)
-            add_edge("cdu_1", "sale_lpg", "LPG", lpg)
+            if not has_sgp_lpg and not has_ugp_lpg:
+                add_edge("cdu_1", "sale_lpg", "LPG", lpg)
 
         # FCC → Gasoline Blender (LCN + HCN_to_blend)
         fcc_to_blend = fcc_lcn + hcn_to_blend
-        add_node("blend_gasoline", FlowNodeType.BLEND_HEADER, "Gasoline Blender", gasoline)
+        add_node("blend_gasoline", FlowNodeType.BLEND_HEADER, "Gasoline Pool", gasoline)
         if fcc_to_blend > 1.0:
             add_edge("fcc_1", "blend_gasoline", "LCN + HCN", fcc_to_blend)
 
@@ -469,12 +481,15 @@ def _build_planning_result(
                     add_edge("scanfiner_1", "blend_gasoline", "Treated HCN", scan_out)
 
         # Alkylation: FCC C3/C4 → Alky → Alkylate → Blender
+        # When UGP is present, the olefin feed edge is drawn in the UGP
+        # block (FCC → UGP → alky). Here we only handle the direct FCC path.
         if hasattr(model, "c3c4_to_alky"):
             c3c4_alky = _safe_value(model.c3c4_to_alky[p])
             alky_out = _safe_value(model.alkylate_volume[p])
             if c3c4_alky > 1.0:
                 add_node("alky_1", FlowNodeType.UNIT, "Alkylation", c3c4_alky)
-                add_edge("fcc_1", "alky_1", "C3/C4 olefins", c3c4_alky)
+                if not hasattr(model, "ugp_feed"):
+                    add_edge("fcc_1", "alky_1", "C3/C4 olefins", c3c4_alky)
                 if alky_out > 1.0:
                     add_edge("alky_1", "blend_gasoline", "Alkylate", alky_out)
 
@@ -528,7 +543,7 @@ def _build_planning_result(
             btx = _safe_value(model.btx_volume[p])
             arom_raff = _safe_value(model.arom_raffinate_vol[p])
             if hn_arom > 1.0:
-                add_node("arom_reformer", FlowNodeType.UNIT, "Aromatics Reformer", hn_arom)
+                add_node("arom_reformer", FlowNodeType.UNIT, "Arom Reformer", hn_arom)
                 add_edge("cdu_1", "arom_reformer", "Heavy Naphtha", hn_arom)
                 if btx > 1.0:
                     add_node("sale_btx", FlowNodeType.SALE_POINT, "BTX", btx)
@@ -542,9 +557,114 @@ def _build_planning_result(
             dimate = _safe_value(model.dimate_vol[p])
             if prop_dim > 1.0:
                 add_node("dimersol", FlowNodeType.UNIT, "Dimersol", prop_dim)
-                add_edge("fcc_1", "dimersol", "Propylene", prop_dim)
+                # Feed source is UGP when present, else FCC direct
+                dim_src = "ugp_1" if hasattr(model, "ugp_feed") else "fcc_1"
+                add_edge(dim_src, "dimersol", "Propylene", prop_dim)
                 if dimate > 1.0:
                     add_edge("dimersol", "blend_gasoline", "Dimate", dimate)
+
+        # Unsaturated Gas Plant: FCC C3/C4 → UGP → propylene/propane/butylene/iC4/nC4/fuel gas
+        if hasattr(model, "ugp_feed"):
+            ugp_feed = _safe_value(model.ugp_feed[p])
+            if ugp_feed > 1.0:
+                add_node("ugp_1", FlowNodeType.UNIT, "Unsat Gas Plant", ugp_feed)
+                add_edge("fcc_1", "ugp_1", "C3/C4 pool", ugp_feed)
+                ugp_prop = _safe_value(model.ugp_propylene_vol[p])
+                ugp_buty = _safe_value(model.ugp_butylene_vol[p])
+                ugp_propane = _safe_value(model.ugp_propane_vol[p])
+                ugp_ic4_alky = _safe_value(model.ugp_ic4_to_alky[p])
+                ugp_ic4_lpg = _safe_value(model.ugp_ic4_to_lpg[p])
+                ugp_nc4_isom = _safe_value(model.ugp_nc4_to_c4isom[p])
+                ugp_nc4_lpg = _safe_value(model.ugp_nc4_to_lpg[p])
+                ugp_fg = _safe_value(model.ugp_fuel_gas_vol[p])
+                # Olefins → alky (propylene + butylenes going to c3c4_to_alky)
+                if hasattr(model, "c3c4_to_alky"):
+                    c3c4 = _safe_value(model.c3c4_to_alky[p])
+                    if c3c4 > 1.0 and "alky_1" in flow_node_ids:
+                        add_edge("ugp_1", "alky_1", "Propylene+Butylenes", c3c4)
+                # iC4 → alky
+                if ugp_ic4_alky > 1.0 and "alky_1" in flow_node_ids:
+                    add_edge("ugp_1", "alky_1", "iC4", ugp_ic4_alky)
+                # nC4 → C4 isom
+                if ugp_nc4_isom > 1.0 and "isom_c4" in flow_node_ids:
+                    add_edge("ugp_1", "isom_c4", "nC4", ugp_nc4_isom)
+                # Propane + iC4/nC4 surplus → LPG sale
+                lpg_from_ugp = ugp_propane + ugp_ic4_lpg + ugp_nc4_lpg
+                if lpg_from_ugp > 1.0 and "sale_lpg" in flow_node_ids:
+                    add_edge("ugp_1", "sale_lpg", "Propane + C4 paraffins", lpg_from_ugp)
+                # Fuel gas (C1+C2) terminates internally at the gas plant —
+                # consumed as plant fuel, not a sale stream. No edge emitted.
+                _ = (ugp_prop, ugp_buty, ugp_fg)
+
+        # Saturated Gas Plant: CDU/coker/HCU paraffins → SGP → propane/iC4/nC4/fuel gas
+        if hasattr(model, "sgp_feed"):
+            sgp_feed = _safe_value(model.sgp_feed[p])
+            if sgp_feed > 1.0:
+                add_node("sgp_1", FlowNodeType.UNIT, "Sat Gas Plant", sgp_feed)
+                add_edge("cdu_1", "sgp_1", "CDU light ends", sgp_feed)
+                if hasattr(model, "coker_gas_vol"):
+                    ck_gas = _safe_value(model.coker_gas_vol[p])
+                    if ck_gas > 1.0 and "coker_1" in flow_node_ids:
+                        add_edge("coker_1", "sgp_1", "Coker Gas", ck_gas)
+                if hasattr(model, "hcu_lpg_vol"):
+                    h_lpg = _safe_value(model.hcu_lpg_vol[p])
+                    if h_lpg > 1.0 and "hcu_1" in flow_node_ids:
+                        add_edge("hcu_1", "sgp_1", "HCU LPG", h_lpg)
+                sgp_propane = _safe_value(model.sgp_propane_vol[p])
+                sgp_ic4_alky = _safe_value(model.sgp_ic4_to_alky[p])
+                sgp_ic4_lpg = _safe_value(model.sgp_ic4_to_lpg[p])
+                sgp_nc4_isom = _safe_value(model.sgp_nc4_to_c4isom[p])
+                sgp_nc4_lpg = _safe_value(model.sgp_nc4_to_lpg[p])
+                sgp_fg = _safe_value(model.sgp_fuel_gas_vol[p])
+                if sgp_ic4_alky > 1.0 and "alky_1" in flow_node_ids:
+                    add_edge("sgp_1", "alky_1", "iC4", sgp_ic4_alky)
+                if sgp_nc4_isom > 1.0 and "isom_c4" in flow_node_ids:
+                    add_edge("sgp_1", "isom_c4", "nC4", sgp_nc4_isom)
+                lpg_from_sgp = sgp_propane + sgp_ic4_lpg + sgp_nc4_lpg
+                if lpg_from_sgp > 1.0 and "sale_lpg" in flow_node_ids:
+                    add_edge("sgp_1", "sale_lpg", "Propane + C4 paraffins", lpg_from_sgp)
+                # SGP fuel gas terminates internally — not a sale stream.
+                _ = sgp_fg
+
+        # Plant Fuel System (pfs_1) — utility sink collecting internal fuel
+        # gas streams for plant energy consumption. No economic edge: fuel
+        # gas offsets natural-gas purchases already netted into unit opex.
+        pfs_edges: list[tuple[str, float, str]] = []
+        if hasattr(model, "ugp_fuel_gas_vol"):
+            v = _safe_value(model.ugp_fuel_gas_vol[p])
+            if v > 1.0 and "ugp_1" in flow_node_ids:
+                pfs_edges.append(("ugp_1", v, "Fuel Gas (C1+C2)"))
+        if hasattr(model, "sgp_fuel_gas_vol"):
+            v = _safe_value(model.sgp_fuel_gas_vol[p])
+            if v > 1.0 and "sgp_1" in flow_node_ids:
+                pfs_edges.append(("sgp_1", v, "Fuel Gas (C1+C2)"))
+        # Estimated dry-gas byproducts from conversion units — not modeled
+        # explicitly but shown visually for utility-balance context.
+        _FCC_DRY_GAS_FRAC = 0.02    # ~2% of FCC feed → dry gas
+        _REFORMER_FUEL_FRAC = 0.02  # ~2% hydrogen + light ends
+        _COKER_FUEL_FRAC = 0.01     # small residual beyond C3/C4 to SGP
+        _HCU_FUEL_FRAC = 0.005      # trace H2S/CH4
+        if "fcc_1" in flow_node_ids and hasattr(model, "vgo_to_fcc"):
+            fv = _safe_value(model.vgo_to_fcc[p]) * _FCC_DRY_GAS_FRAC
+            if fv > 1.0:
+                pfs_edges.append(("fcc_1", fv, "Dry Gas"))
+        if "reformer_1" in flow_node_ids and hasattr(model, "hn_to_reformer"):
+            rv = _safe_value(model.hn_to_reformer[p]) * _REFORMER_FUEL_FRAC
+            if rv > 1.0:
+                pfs_edges.append(("reformer_1", rv, "Fuel Gas"))
+        if "coker_1" in flow_node_ids and hasattr(model, "coker_feed"):
+            cv = _safe_value(model.coker_feed[p]) * _COKER_FUEL_FRAC
+            if cv > 1.0:
+                pfs_edges.append(("coker_1", cv, "Fuel Gas"))
+        if "hcu_1" in flow_node_ids and hasattr(model, "vgo_to_hcu"):
+            hv = _safe_value(model.vgo_to_hcu[p]) * _HCU_FUEL_FRAC
+            if hv > 1.0:
+                pfs_edges.append(("hcu_1", hv, "Fuel Gas"))
+        if pfs_edges:
+            pfs_total = sum(v for _, v, _name in pfs_edges)
+            add_node("pfs_1", FlowNodeType.PROCESS, "Plant Fuel Sys", pfs_total)
+            for src, vol, name in pfs_edges:
+                add_edge(src, "pfs_1", name, vol)
 
         # C5/C6 Isomerization: CDU LN → C5/C6 Isom → Isomerate → Gasoline Blender
         if hasattr(model, "ln_to_isom"):
@@ -583,7 +703,10 @@ def _build_planning_result(
                     add_edge("hcu_1", "sale_diesel", "HCU Diesel", hcu_dsl)
                 if hcu_naph > 1.0:
                     add_edge("hcu_1", "sale_naphtha", "HCU Naphtha", hcu_naph)
-                if hcu_lpg > 1.0:
+                # HCU LPG flows through SGP when it's present (edge drawn in
+                # the SGP block). Only emit the direct HCU→sale_lpg edge when
+                # SGP is absent, otherwise pool_lpg double-counts the volume.
+                if hcu_lpg > 1.0 and not hasattr(model, "sgp_feed"):
                     add_edge("hcu_1", "sale_lpg", "HCU LPG", hcu_lpg)
                 if hcu_unc > 1.0:
                     add_edge("hcu_1", "sale_fuel_oil", "Unconverted", hcu_unc)
@@ -634,10 +757,12 @@ def _build_planning_result(
         if fcc_to_fo > 1.0:
             add_edge("fcc_1", "sale_fuel_oil", "HCN + LCO slop", fcc_to_fo)
 
-        # FCC → LPG (C3 + C4)
-        fcc_to_lpg = fcc_c3 + fcc_c4
-        if fcc_to_lpg > 1.0 and lpg > 1.0:
-            add_edge("fcc_1", "sale_lpg", "C3 + C4", fcc_to_lpg)
+        # FCC → LPG (C3 + C4) — direct path only when UGP is absent.
+        # With UGP: propane/nC4/iC4 flow through UGP to sale_lpg (edge drawn above).
+        if not hasattr(model, "ugp_feed"):
+            fcc_to_lpg = fcc_c3 + fcc_c4
+            if fcc_to_lpg > 1.0 and lpg > 1.0:
+                add_edge("fcc_1", "sale_lpg", "C3 + C4", fcc_to_lpg)
 
         # Always add nodes for configured units (even if idle at throughput=0)
         # so the "Full Diagram" toggle can show the refinery structure.
@@ -646,7 +771,7 @@ def _build_planning_result(
                 display = uconf.unit_id.replace("_", " ").title()
                 # Check most-specific names FIRST (before generic keywords)
                 if uid == "arom_reformer":
-                    display = "Aromatics Reformer"
+                    display = "Arom Reformer"
                 elif uid == "reformer_1":
                     display = "Reformer"
                 elif uid == "isom_c56":
@@ -655,6 +780,12 @@ def _build_planning_result(
                     display = "C4 Isom"
                 elif uid == "dimersol":
                     display = "Dimersol"
+                elif uid == "ugp_1":
+                    display = "Unsat Gas Plant"
+                elif uid == "sgp_1":
+                    display = "Sat Gas Plant"
+                elif uid == "pfs_1":
+                    display = "Plant Fuel Sys"
                 elif uid == "kht_1":
                     display = "Kero HT"
                 elif uid == "dht_1":
@@ -675,7 +806,8 @@ def _build_planning_result(
                     display = "Coker"
                 elif uid == "hcu_1" or "hcu" in uid:
                     display = "Hydrocracker"
-                add_node(uid, FlowNodeType.UNIT, display, 0.0)
+                node_type = FlowNodeType.PROCESS if uid == "pfs_1" else FlowNodeType.UNIT
+                add_node(uid, node_type, display, 0.0)
 
         # Potential (zero-volume) edges for idle units — shown dimmed in
         # Full Diagram mode so users can see the refinery topology.
@@ -730,10 +862,45 @@ def _build_planning_result(
 
         # Dimersol topology: FCC propylene → Dimersol → Dimate
         if "dimersol" in flow_node_ids:
-            if "fcc_1" in flow_node_ids:
-                add_potential_edge("fcc_1", "dimersol", "Propylene")
+            dim_src = "ugp_1" if "ugp_1" in flow_node_ids else "fcc_1"
+            if dim_src in flow_node_ids:
+                add_potential_edge(dim_src, "dimersol", "Propylene")
             if "blend_gasoline" in flow_node_ids:
                 add_potential_edge("dimersol", "blend_gasoline", "Dimate")
+
+        # Unsaturated Gas Plant topology: FCC C3/C4 → UGP → alky/isom/LPG/fuel
+        if "ugp_1" in flow_node_ids:
+            if "fcc_1" in flow_node_ids:
+                add_potential_edge("fcc_1", "ugp_1", "C3/C4 pool")
+            if "alky_1" in flow_node_ids:
+                add_potential_edge("ugp_1", "alky_1", "Olefins + iC4")
+            if "isom_c4" in flow_node_ids:
+                add_potential_edge("ugp_1", "isom_c4", "nC4")
+            if "sale_lpg" in flow_node_ids:
+                add_potential_edge("ugp_1", "sale_lpg", "Propane + C4 paraffins")
+
+        # Saturated Gas Plant topology: CDU/coker/HCU paraffins → SGP → alky/isom/LPG/fuel
+        if "sgp_1" in flow_node_ids:
+            if "cdu_1" in flow_node_ids:
+                add_potential_edge("cdu_1", "sgp_1", "CDU light ends")
+            if "coker_1" in flow_node_ids:
+                add_potential_edge("coker_1", "sgp_1", "Coker Gas")
+            if "hcu_1" in flow_node_ids:
+                add_potential_edge("hcu_1", "sgp_1", "HCU LPG")
+            if "alky_1" in flow_node_ids:
+                add_potential_edge("sgp_1", "alky_1", "iC4")
+            if "isom_c4" in flow_node_ids:
+                add_potential_edge("sgp_1", "isom_c4", "nC4")
+            if "sale_lpg" in flow_node_ids:
+                add_potential_edge("sgp_1", "sale_lpg", "Propane + C4 paraffins")
+
+        # Plant Fuel System topology — fuel gas collection from any unit
+        # that produces light ends. Potential edges keep the utility lane
+        # populated even when throughputs are zero.
+        if "pfs_1" in flow_node_ids:
+            for src in ("ugp_1", "sgp_1", "fcc_1", "reformer_1", "coker_1", "hcu_1"):
+                if src in flow_node_ids:
+                    add_potential_edge(src, "pfs_1", "Fuel Gas")
 
         # CDU dispositions in CDU yields (cuts)
         cdu_cuts = {
@@ -774,6 +941,215 @@ def _build_planning_result(
                 net_margin=crude_revenue_attribution[cid] - crude_costs[cid],
             )
         )
+
+    # Naphtha Splitter (CNSP) — visualization-only node. The optimizer
+    # treats CDU cuts as already-split LN/HN, but operationally a splitter
+    # tower separates the full-range naphtha cut before it fans out to
+    # downstream units. Rewire every cdu_1 → naphtha-consumer edge through
+    # splitter_1 so the flowsheet reflects real plant topology.
+    _NAPHTHA_CONSUMERS = {
+        "nht_1", "reformer_1", "arom_reformer",
+        "isom_c56", "blend_gasoline", "sale_naphtha",
+    }
+    _splitter_next_edge_id = len(flow_graph.edges) + 1
+    _splitter_incoming = [
+        e for e in flow_graph.edges
+        if e.source_node == "cdu_1" and e.dest_node in _NAPHTHA_CONSUMERS
+    ]
+    if _splitter_incoming:
+        splitter_volume = sum(e.volume for e in _splitter_incoming)
+        flow_graph.nodes.append(
+            FlowNode(
+                node_id="splitter_1",
+                node_type=FlowNodeType.UNIT,
+                display_name="Naphtha Splitter",
+                throughput=splitter_volume,
+            )
+        )
+        flow_graph.edges.append(
+            FlowEdge(
+                edge_id=f"e{_splitter_next_edge_id}",
+                source_node="cdu_1",
+                dest_node="splitter_1",
+                stream_name="Naphtha",
+                display_name="Full-range Naphtha",
+                volume=splitter_volume,
+            )
+        )
+        for e in _splitter_incoming:
+            e.source_node = "splitter_1"
+
+    # Insert blend-pool BLEND_HEADER nodes between unit outputs and sale
+    # points for every non-gasoline finished product. Mirrors the existing
+    # blend_gasoline pattern (units → blender → sale) so every product has a
+    # dedicated pool node upstream of its sale node for visual consistency
+    # and future grade-level expansion.
+    _POOLED_PRODUCTS: dict[str, tuple[str, str]] = {
+        "sale_diesel":   ("pool_diesel",   "Diesel Pool"),
+        "sale_jet":      ("pool_jet",      "Jet Pool"),
+        "sale_fuel_oil": ("pool_fuel_oil", "Fuel Oil Pool"),
+        "sale_lpg":      ("pool_lpg",      "LPG Pool"),
+        "sale_naphtha":  ("pool_naphtha",  "Naphtha Pool"),
+        "sale_btx":      ("pool_btx",      "BTX Pool"),
+    }
+    existing_ids = {n.node_id for n in flow_graph.nodes}
+    next_edge_id = len(flow_graph.edges) + 1
+    for sale_id, (pool_id, pool_name) in _POOLED_PRODUCTS.items():
+        if sale_id not in existing_ids:
+            continue
+        pool_volume = 0.0
+        redirected = 0
+        for e in flow_graph.edges:
+            if e.dest_node == sale_id and e.source_node != pool_id:
+                e.dest_node = pool_id
+                pool_volume += e.volume
+                redirected += 1
+        if redirected == 0:
+            continue
+        flow_graph.nodes.append(
+            FlowNode(
+                node_id=pool_id,
+                node_type=FlowNodeType.BLEND_HEADER,
+                display_name=pool_name,
+                throughput=pool_volume,
+            )
+        )
+        flow_graph.edges.append(
+            FlowEdge(
+                edge_id=f"e{next_edge_id}",
+                source_node=pool_id,
+                dest_node=sale_id,
+                stream_name=pool_name,
+                display_name=pool_name,
+                volume=pool_volume,
+            )
+        )
+        next_edge_id += 1
+        # Reconcile the sale node's throughput with the actual pool output so
+        # the product card matches what's flowing into it. The optimizer's
+        # <product>_sales variable can diverge when edges are emitted by
+        # multiple unit blocks (double-counting) or missed (single-counting);
+        # the pool volume is the authoritative visual total.
+        for n in flow_graph.nodes:
+            if n.node_id == sale_id:
+                n.throughput = pool_volume
+                break
+
+    # Hydrogen balance network — refinery H2 is a critical flow that is
+    # otherwise invisible. Emit an h2_header node with edges from
+    # producers (reformer, arom reformer, h2 plant) and edges to
+    # consumers (hydrotreaters, HCU, isoms). All volumes are in bbl/d
+    # equivalent (1 bbl H2 ≈ 5600 SCF at standard conditions) so they
+    # render consistently alongside liquid flows.
+    #
+    # Supplies are computed from FEED × physical SCFB rather than from
+    # the model's reformer_hydrogen var, whose coefficient (0.03) treats
+    # H2 yield as 30,000 SCFB — roughly 30× typical reformer yield
+    # (700–1500 SCFB). Physical-SCFB formulas give display values in
+    # the plant-realistic range without altering solver behavior.
+    _MMSCFD_TO_BBL = 1e6 / 5600.0
+    h2_sources: list[tuple[str, str, float, str]] = []
+    if hasattr(model, "hn_to_reformer"):
+        hn_ref = _safe_value(model.hn_to_reformer[0])
+        if hasattr(model, "reformer_severity"):
+            sev = _safe_value(model.reformer_severity[0])
+            ref_scfb = 800.0 + 20.0 * (sev - 90.0)
+        else:
+            ref_scfb = 1000.0
+        v = hn_ref * ref_scfb / 5600.0
+        if v > 0.1:
+            h2_sources.append(("reformer_1", "Reformer", v, "H2"))
+    if hasattr(model, "hn_to_arom"):
+        hn_arom = _safe_value(model.hn_to_arom[0])
+        v = hn_arom * 500.0 / 5600.0
+        if v > 0.1:
+            h2_sources.append(("arom_reformer", "Arom Reformer", v, "H2"))
+    h2_plant_v = 0.0
+    if hasattr(model, "h2_purchased"):
+        h2_plant_v = _safe_value(model.h2_purchased[0]) * _MMSCFD_TO_BBL
+
+    h2_consumers: list[tuple[str, float, str]] = []
+    p0 = 0
+    if hasattr(model, "vgo_to_goht"):
+        v = _safe_value(model.vgo_to_goht[p0]) * 1000.0 / 5600.0
+        if v > 0.1:
+            h2_consumers.append(("goht_1", v, "H2"))
+    if hasattr(model, "hcn_to_scanfiner"):
+        v = _safe_value(model.hcn_to_scanfiner[p0]) * 300.0 / 5600.0
+        if v > 0.1:
+            h2_consumers.append(("scanfiner_1", v, "H2"))
+    if hasattr(model, "kero_to_kht"):
+        v = _safe_value(model.kero_to_kht[p0]) * 600.0 / 5600.0
+        if v > 0.1:
+            h2_consumers.append(("kht_1", v, "H2"))
+    if hasattr(model, "diesel_to_dht"):
+        dht_feed = _safe_value(model.diesel_to_dht[p0])
+        if hasattr(model, "lco_to_dht"):
+            dht_feed += _safe_value(model.lco_to_dht[p0])
+        if hasattr(model, "coker_go_to_dht"):
+            dht_feed += _safe_value(model.coker_go_to_dht[p0])
+        v = dht_feed * 800.0 / 5600.0
+        if v > 0.1:
+            h2_consumers.append(("dht_1", v, "H2"))
+    if hasattr(model, "vgo_to_hcu") and hasattr(model, "hcu_conversion"):
+        hcu_scfb = 1500.0 + 30.0 * (_safe_value(model.hcu_conversion[p0]) - 60.0)
+        v = _safe_value(model.vgo_to_hcu[p0]) * hcu_scfb / 5600.0
+        if v > 0.1:
+            h2_consumers.append(("hcu_1", v, "H2"))
+    if hasattr(model, "ln_to_isom"):
+        v = _safe_value(model.ln_to_isom[p0]) * 150.0 / 5600.0
+        if v > 0.1:
+            h2_consumers.append(("isom_c56", v, "H2"))
+
+    existing_ids_h2 = {n.node_id for n in flow_graph.nodes}
+    if (h2_sources or h2_plant_v > 0.1) and h2_consumers:
+        total_supply = sum(v for _, _, v, _ in h2_sources) + h2_plant_v
+        total_demand = sum(v for _, v, _ in h2_consumers)
+        # Header throughput = actual hydrogen flowing through the bus. Use
+        # total demand because consumers define the draw; physical supply
+        # formulas may under-state what the model's inflated H2 balance
+        # permits, but demand is always grounded in feed × SCFB.
+        flow_graph.nodes.append(
+            FlowNode(
+                node_id="h2_header",
+                node_type=FlowNodeType.BLEND_HEADER,
+                display_name="H2 Header",
+                throughput=max(total_supply, total_demand),
+            )
+        )
+        if h2_plant_v > 0.1:
+            flow_graph.nodes.append(
+                FlowNode(
+                    node_id="h2_plant",
+                    node_type=FlowNodeType.UNIT,
+                    display_name="H2 Plant",
+                    throughput=h2_plant_v,
+                )
+            )
+            flow_graph.edges.append(FlowEdge(
+                edge_id=f"e{next_edge_id}", source_node="h2_plant",
+                dest_node="h2_header", stream_name="H2", display_name="H2",
+                volume=h2_plant_v,
+            ))
+            next_edge_id += 1
+        for src, _disp, vol, label in h2_sources:
+            if src not in existing_ids_h2:
+                continue
+            flow_graph.edges.append(FlowEdge(
+                edge_id=f"e{next_edge_id}", source_node=src,
+                dest_node="h2_header", stream_name=label, display_name=label,
+                volume=vol,
+            ))
+            next_edge_id += 1
+        for tgt, vol, label in h2_consumers:
+            if tgt not in existing_ids_h2:
+                continue
+            flow_graph.edges.append(FlowEdge(
+                edge_id=f"e{next_edge_id}", source_node="h2_header",
+                dest_node=tgt, stream_name=label, display_name=label,
+                volume=vol,
+            ))
+            next_edge_id += 1
 
     # Inventory trajectory (per tank, per period) — only present when tanks exist
     inventory_trajectory: dict[str, list[float]] = {}

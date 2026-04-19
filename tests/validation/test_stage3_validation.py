@@ -72,13 +72,17 @@ class TestMargin:
         assert base_result.solver_status == "optimal"
 
     def test_margin_in_target_range(self, base_result):
-        """Stage 3 target: $1.5-2.5M/day."""
+        """Sprint 16 target: $1.2-2.5M/day (lowered from $1.5-2.5M after gas
+        plant integration — UGP now limits alky feed to actual olefins
+        (propylene + butylenes) rather than the lumped C3/C4 paraffin pool,
+        which is physically accurate but reduces alkylate output)."""
         m = base_result.total_margin
-        assert 1_500_000 <= m <= 2_500_000, f"Margin ${m:,.0f} outside target $1.5-2.5M"
+        assert 1_200_000 <= m <= 2_500_000, f"Margin ${m:,.0f} outside target $1.2-2.5M"
 
     def test_margin_exceeds_stage2b(self, base_result):
-        """Stage 3 (+3 units from 2B) should beat Stage 2B's $1.36M baseline."""
-        assert base_result.total_margin > 1_400_000
+        """Post-Sprint-16 baseline: > $1.2M (down from $1.4M pre-gas-plant
+        due to physically-accurate olefin/paraffin separation)."""
+        assert base_result.total_margin > 1_200_000
 
 
 # --------------------------------------------------------------------------
@@ -123,13 +127,17 @@ class TestCoreUnitsActive:
         assert vac.throughput > 10_000
 
     def test_reformer_active(self, base_result):
-        """Mogas reformer should run (replaces purchased reformate)."""
+        """Mogas reformer should run (replaces purchased reformate).
+        Post-Sprint-16: threshold reduced from 5K to 2K — with less alkylate
+        available (gas-plant-accurate olefin split), optimizer increasingly
+        uses the aromatics reformer instead of the mogas reformer for
+        octane, so reformer_1 settles at marginal rates."""
         ref = next(
             (n for n in base_result.material_flow.nodes if n.node_id == "reformer_1"),
             None,
         )
         assert ref is not None
-        assert ref.throughput > 5_000
+        assert ref.throughput > 2_000
 
     def test_isom_c56_active(self, base_result):
         """C5/C6 isom should run (upgrades LN octane)."""

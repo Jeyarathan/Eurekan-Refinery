@@ -68,7 +68,7 @@ class TestEnums:
         assert UnitType.CDU == "cdu"
         assert UnitType.FCC == "fcc"
         assert UnitType.BLENDER == "blender"
-        assert len(UnitType) == 10
+        assert len(UnitType) == 12
 
     def test_tank_type_values(self):
         assert TankType.CRUDE == "crude"
@@ -1017,7 +1017,7 @@ class TestFlowNodeAndEdge:
     def test_flow_node_types(self):
         assert FlowNodeType.PURCHASE == "purchase"
         assert FlowNodeType.BLEND_HEADER == "blend_header"
-        assert len(FlowNodeType) == 5
+        assert len(FlowNodeType) == 6
 
     def test_flow_node_construction(self):
         n = FlowNode(

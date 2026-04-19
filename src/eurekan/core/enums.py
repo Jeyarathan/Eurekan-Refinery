@@ -17,6 +17,8 @@ class UnitType(str, Enum):
     COKER = "coker"
     ALKYLATION = "alkylation"
     ISOMERIZATION = "isomerization"
+    GAS_PLANT = "gas_plant"
+    UTILITY = "utility"
     BLENDER = "blender"
 
 
