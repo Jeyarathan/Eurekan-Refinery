@@ -70,12 +70,14 @@ function StreamTooltip({ edge, x, y }: { edge: LayoutEdge | null; x: number; y: 
 interface Props {
   result: PlanningResult
   showFullDiagram?: boolean
+  showH2Network?: boolean
   highlightedNodeId?: string | null
   onNodeClick?: (nodeId: string | null) => void
 }
 
 export function SvgFlowsheet({
-  result, showFullDiagram = false, highlightedNodeId = null, onNodeClick,
+  result, showFullDiagram = false, showH2Network = false,
+  highlightedNodeId = null, onNodeClick,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
   const [hovUnit, setHovUnit] = useState<string | null>(null)
@@ -92,8 +94,8 @@ export function SvgFlowsheet({
   const fccConv = period?.fcc_result?.conversion ?? null
 
   const layout = useMemo(
-    () => calculateLayout(flow.nodes, flow.edges, fccConv, showFullDiagram),
-    [flow, fccConv, showFullDiagram],
+    () => calculateLayout(flow.nodes, flow.edges, fccConv, showFullDiagram, showH2Network),
+    [flow, fccConv, showFullDiagram, showH2Network],
   )
 
   // Auto-fit viewBox to content bounds whenever layout changes

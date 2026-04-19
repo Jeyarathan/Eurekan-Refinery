@@ -112,6 +112,9 @@ function assignX(id: string): number {
     isom_c56: COLS.STAGE2,
     goht_1: COLS.STAGE1,
     fcc_1: COLS.STAGE2,
+    // Scanfiner sits on the FCC → gasoline pool path at STAGE3, centered
+    // in the FCC lane. Alky and Dimersol stack above/below (for their
+    // C3/C4 → blender paths) via laneYOffset.
     scanfiner_1: COLS.STAGE3,
     alky_1: COLS.STAGE3,
     dimersol: COLS.STAGE3,
@@ -139,12 +142,18 @@ function assignX(id: string): number {
 //   reformer_1 at 0 → y=201 (7px gap below arom_reformer)
 //   isom_c56 at +45 → y=246 (7px gap below reformer_1; 16px margin from lane bottom=300)
 function laneYOffset(id: string): number {
+  // FCC lane stack at STAGE3:
+  //   alky_1      (y −45, C3/C4 → gasoline, top)
+  //   scanfiner_1 (y   0, HCN → gasoline, middle, centered on FCC)
+  //   dimersol    (y +45, propylene → gasoline, bottom)
+  // Scanfiner lands on the same horizontal as FCC so the natural
+  // FCC → Scanfiner → Gasoline Pool path reads left-to-right.
   const offsets: Record<string, number> = {
     arom_reformer: -45,
     isom_c56: 45,
-    scanfiner_1: -30,
-    alky_1: 10,
-    dimersol: 60,
+    scanfiner_1: 0,
+    alky_1: -45,
+    dimersol: 45,
   }
   return offsets[id] ?? 0
 }
@@ -219,6 +228,7 @@ export function calculateLayout(
   flowEdges: Array<{ edge_id: string; source_node: string; dest_node: string; display_name: string; volume: number; properties?: CutProperties }>,
   fccConversion?: number | null,
   showFullDiagram = true,
+  showH2Network = false,
 ): LayoutResult {
   const nodes: LayoutNode[] = []
   const edges: LayoutEdge[] = []
@@ -230,6 +240,24 @@ export function calculateLayout(
   const units = flowNodes.filter(n => n.node_type === 'unit' || n.node_type === 'process')
   const blends = flowNodes.filter(n => n.node_type === 'blend_header')
   const products = flowNodes.filter(n => n.node_type === 'sale_point')
+
+  // Defensive: reconcile junction-node throughputs with their edge sums so
+  // the displayed rate always matches what fans in/out. If a stale or
+  // transformed response ever reaches the UI with an inconsistent value,
+  // this guarantees the header number tracks the real flow.
+  const inSum = new Map<string, number>()
+  const outSum = new Map<string, number>()
+  for (const e of flowEdges) {
+    inSum.set(e.dest_node, (inSum.get(e.dest_node) ?? 0) + e.volume)
+    outSum.set(e.source_node, (outSum.get(e.source_node) ?? 0) + e.volume)
+  }
+  const JUNCTION_IDS = new Set(['splitter_1', 'h2_header', 'blend_gasoline',
+    'pool_diesel', 'pool_jet', 'pool_fuel_oil', 'pool_lpg', 'pool_naphtha', 'pool_btx'])
+  const reconciledThroughput = (n: { node_id: string; throughput: number }): number => {
+    if (!JUNCTION_IDS.has(n.node_id)) return n.throughput
+    const r = Math.max(inSum.get(n.node_id) ?? 0, outSum.get(n.node_id) ?? 0)
+    return r > 1 ? r : n.throughput
+  }
 
   // Crude feed nodes — active crudes prominent on top, inactive dimmed below.
   // Sort: active first (descending throughput), then inactive alphabetically.
@@ -311,12 +339,13 @@ export function calculateLayout(
     const x = assignX(n.node_id)
     const yBase = laneInfo.y + laneInfo.h / 2 - UNIT_H / 2
     const yOff = laneYOffset(n.node_id)
-    const dimmed = n.throughput <= 1
+    const t = reconciledThroughput(n)
+    const dimmed = t <= 1
     if (!showFullDiagram && dimmed) return
     nodes.push({
       id: n.node_id, x, y: yBase + yOff,
-      w: UNIT_W, h: UNIT_H, label: n.display_name, rate: n.throughput,
-      rateStr: fmtRate(n.throughput), nodeType: 'unit', lane,
+      w: UNIT_W, h: UNIT_H, label: n.display_name, rate: t,
+      rateStr: fmtRate(t), nodeType: 'unit', lane,
       dimmed,
       badge: n.node_id === 'fcc_1' && fccConversion ? `${fccConversion.toFixed(0)}%` : undefined,
       utilPct: 0,
@@ -339,14 +368,15 @@ export function calculateLayout(
     // alongside utility_gen, pfs_1, and h2_plant — no distinct bus/banner
     // styling. Sits at STAGE2 (between utility_gen on the left and pfs_1
     // on the right).
+    const t = reconciledThroughput(n)
     if (n.node_id === 'h2_header') {
       const laneInfo = LANES.UTILITIES
       nodes.push({
         id: n.node_id,
         x: COLS.STAGE2,
         y: laneInfo.y + laneInfo.h / 2 - UNIT_H / 2,
-        w: UNIT_W, h: UNIT_H, label: n.display_name, rate: n.throughput,
-        rateStr: fmtRate(n.throughput), nodeType: 'unit', lane: 'UTILITIES',
+        w: UNIT_W, h: UNIT_H, label: n.display_name, rate: t,
+        rateStr: fmtRate(t), nodeType: 'unit', lane: 'UTILITIES',
         dimmed: false, utilPct: 0,
       })
       return
@@ -356,8 +386,8 @@ export function calculateLayout(
                         : LANES.NAPHTHA.y + 50
     nodes.push({
       id: n.node_id, x: COLS.BLEND, y,
-      w: BLEND_W, h: BLEND_H, label: n.display_name, rate: n.throughput,
-      rateStr: fmtRate(n.throughput), nodeType: 'blend',
+      w: BLEND_W, h: BLEND_H, label: n.display_name, rate: t,
+      rateStr: fmtRate(t), nodeType: 'blend',
       dimmed: false, utilPct: 0,
     })
   })
@@ -379,6 +409,11 @@ export function calculateLayout(
     if (!showFullDiagram && e.volume <= 1) return
     if (!nodeMap.has(e.source_node) || !nodeMap.has(e.dest_node)) return
     const { color, type } = streamColor(e.display_name, e.source_node, e.dest_node)
+    // H2 network is hidden by default to reduce visual crossings in the
+    // main material-flow view. The h2_header node stays visible in the
+    // Utilities lane so users see the hub; toggling "Show H2" reveals the
+    // magenta edges between HDS/HCU consumers and h2_plant supply.
+    if (!showH2Network && type === 'h2') return
     edges.push({
       id: e.edge_id,
       sourceId: e.source_node,

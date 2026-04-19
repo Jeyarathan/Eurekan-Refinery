@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Loader2,
   Network,
+  Droplets,
   Play,
   Search,
   Sparkles,
@@ -67,6 +68,8 @@ function App() {
   const isStale = useRefineryStore((s) => s.isStale)
   const showFullDiagram = useRefineryStore((s) => s.showFullDiagram)
   const toggleFullDiagram = useRefineryStore((s) => s.toggleFullDiagram)
+  const showH2Network = useRefineryStore((s) => s.showH2Network)
+  const toggleH2Network = useRefineryStore((s) => s.toggleH2Network)
   const startOptimizing = useRefineryStore((s) => s.startOptimizing)
   const finishOptimizing = useRefineryStore((s) => s.finishOptimizing)
 
@@ -176,6 +179,20 @@ function App() {
         >
           {showFullDiagram ? <Network size={12} /> : <Eye size={12} />}
           {showFullDiagram ? 'Full' : 'Live'}
+        </button>
+
+        {/* H2 Network overlay toggle */}
+        <button
+          type="button"
+          onClick={toggleH2Network}
+          className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+            showH2Network
+              ? 'border-pink-300 bg-pink-50 text-pink-700'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <Droplets size={12} />
+          {showH2Network ? 'Hide H2' : 'Show H2'}
         </button>
 
         {/* Stale indicator */}
@@ -495,6 +512,7 @@ function FlowsheetView({
 }) {
   const activeResult = useRefineryStore((s) => s.activeResult)
   const showFull = useRefineryStore((s) => s.showFullDiagram)
+  const showH2 = useRefineryStore((s) => s.showH2Network)
   const highlightedNodeId = useRefineryStore((s) => s.highlightedNodeId)
 
   if (error) {
@@ -540,6 +558,7 @@ function FlowsheetView({
       <RefineryFlowsheet
         result={activeResult}
         showFullDiagram={showFull}
+        showH2Network={showH2}
         highlightedNodeId={highlightedNodeId}
         onNodeClick={onNodeClick}
       />

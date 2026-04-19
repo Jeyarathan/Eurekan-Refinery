@@ -10,6 +10,7 @@ import { SvgFlowsheet } from './SvgFlowsheet'
 interface Props {
   result: PlanningResult
   showFullDiagram?: boolean
+  showH2Network?: boolean
   highlightedNodeId?: string | null
   onNodeClick?: (nodeId: string | null) => void
 }

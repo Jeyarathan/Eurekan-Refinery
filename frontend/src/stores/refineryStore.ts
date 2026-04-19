@@ -19,6 +19,7 @@ interface RefineryState {
   lastOptimizedAt: Date | null
   lastInputChangedAt: Date | null
   showFullDiagram: boolean
+  showH2Network: boolean
   highlightedNodeId: string | null
 
   setActiveResult: (result: PlanningResult) => void
@@ -26,6 +27,7 @@ interface RefineryState {
   startOptimizing: () => void
   finishOptimizing: (result: PlanningResult) => void
   toggleFullDiagram: () => void
+  toggleH2Network: () => void
   setHighlightedNode: (id: string | null) => void
   reset: () => void
 }
@@ -38,6 +40,7 @@ export const useRefineryStore = create<RefineryState>((set) => ({
   lastOptimizedAt: null,
   lastInputChangedAt: null,
   showFullDiagram: false,
+  showH2Network: false,
   highlightedNodeId: null,
 
   setActiveResult: (result) =>
@@ -67,6 +70,9 @@ export const useRefineryStore = create<RefineryState>((set) => ({
 
   toggleFullDiagram: () =>
     set((s) => ({ showFullDiagram: !s.showFullDiagram })),
+
+  toggleH2Network: () =>
+    set((s) => ({ showH2Network: !s.showH2Network })),
 
   setHighlightedNode: (id) => set({ highlightedNodeId: id }),
 
