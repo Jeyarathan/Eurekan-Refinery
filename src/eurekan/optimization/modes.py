@@ -1092,7 +1092,11 @@ def _build_planning_result(
         if v > 0.1:
             h2_consumers.append(("dht_1", v, "H2"))
     if hasattr(model, "vgo_to_hcu") and hasattr(model, "hcu_conversion"):
-        hcu_scfb = 1500.0 + 30.0 * (_safe_value(model.hcu_conversion[p0]) - 60.0)
+        # Flat 2000 SCFB for HCU net treat gas — the earlier conversion-linked
+        # formula (1500 + 30·(conv − 60)) escalated to ~2550 SCFB at conv=95,
+        # roughly 25% above a typical net-consumption range and inflating the
+        # header draw past realistic plant values.
+        hcu_scfb = 2000.0
         v = _safe_value(model.vgo_to_hcu[p0]) * hcu_scfb / 5600.0
         if v > 0.1:
             h2_consumers.append(("hcu_1", v, "H2"))
@@ -1148,6 +1152,35 @@ def _build_planning_result(
                 edge_id=f"e{next_edge_id}", source_node="h2_header",
                 dest_node=tgt, stream_name=label, display_name=label,
                 volume=vol,
+            ))
+            next_edge_id += 1
+
+    # Utility Generation (SUTL) — visualization-only node for power/steam/
+    # cooling water generation. Sits in the Utilities lane alongside the H2
+    # Header and Plant Fuel System. Edges are placeholders (bbl-equivalent)
+    # that render as dashed utility lines; the unit does not participate in
+    # the material balance or objective.
+    _UTILITY_GEN_PLACEHOLDER = 500.0  # bbl/d equivalent, for display only
+    if "pfs_1" in {n.node_id for n in flow_graph.nodes}:
+        flow_graph.nodes.append(
+            FlowNode(
+                node_id="utility_gen",
+                node_type=FlowNodeType.UNIT,
+                display_name="Utility Gen",
+                throughput=_UTILITY_GEN_PLACEHOLDER,
+            )
+        )
+        flow_graph.edges.append(FlowEdge(
+            edge_id=f"e{next_edge_id}", source_node="pfs_1",
+            dest_node="utility_gen", stream_name="Fuel Gas",
+            display_name="Fuel Gas", volume=_UTILITY_GEN_PLACEHOLDER,
+        ))
+        next_edge_id += 1
+        if "h2_header" in {n.node_id for n in flow_graph.nodes}:
+            flow_graph.edges.append(FlowEdge(
+                edge_id=f"e{next_edge_id}", source_node="utility_gen",
+                dest_node="h2_header", stream_name="Steam/Power",
+                display_name="Steam/Power", volume=100.0,
             ))
             next_edge_id += 1
 

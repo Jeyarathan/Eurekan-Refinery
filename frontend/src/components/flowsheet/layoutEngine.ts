@@ -98,6 +98,7 @@ function assignLane(id: string): LaneName | undefined {
   if (['vacuum_1', 'coker_1'].some(u => id === u)) return 'HEAVY'
   if (id === 'pfs_1') return 'UTILITIES'
   if (id === 'h2_plant') return 'UTILITIES'
+  if (id === 'utility_gen') return 'UTILITIES'
   return undefined
 }
 
@@ -123,8 +124,10 @@ function assignX(id: string): number {
     ugp_1: COLS.STAGE1,
     sgp_1: COLS.STAGE2,
     isom_c4: COLS.STAGE3,
-    // Utilities lane — pfs_1 center-left, h2_plant further right
-    pfs_1: COLS.STAGE2,
+    // Utilities lane left→right: utility_gen, h2_header (blend), pfs_1.
+    // h2_plant (when purchased > 0) stacks near pfs_1.
+    utility_gen: COLS.STAGE1,
+    pfs_1: COLS.STAGE3,
     h2_plant: COLS.STAGE3,
   }
   return map[id] ?? COLS.STAGE1
@@ -149,8 +152,10 @@ function laneYOffset(id: string): number {
 // Classify stream color by name/endpoints
 function streamColor(label: string, sourceId: string, targetId: string): { color: string; type: string } {
   const l = label.toLowerCase()
-  // Utility flows into Plant Fuel System render as muted dashed lines.
-  if (targetId === 'pfs_1') return { color: '#9ca3af', type: 'utility' }
+  // Utility flows (into PFS, or touching utility_gen) render as muted
+  // dashed lines — they're accounting lines, not material streams.
+  if (targetId === 'pfs_1' || sourceId === 'utility_gen' || targetId === 'utility_gen')
+    return { color: '#9ca3af', type: 'utility' }
   // Hydrogen network — distinct magenta to stand out from liquid flows.
   if (l === 'h2' || l.includes('hydrogen') || sourceId === 'h2_header' || targetId === 'h2_header')
     return { color: '#ec4899', type: 'h2' }
@@ -331,12 +336,14 @@ export function calculateLayout(
   }
   blends.forEach(n => {
     // H2 header renders as a standard unit node in the UTILITIES lane
-    // alongside pfs_1 and h2_plant — no distinct bus/banner styling.
+    // alongside utility_gen, pfs_1, and h2_plant — no distinct bus/banner
+    // styling. Sits at STAGE2 (between utility_gen on the left and pfs_1
+    // on the right).
     if (n.node_id === 'h2_header') {
       const laneInfo = LANES.UTILITIES
       nodes.push({
         id: n.node_id,
-        x: COLS.STAGE1,
+        x: COLS.STAGE2,
         y: laneInfo.y + laneInfo.h / 2 - UNIT_H / 2,
         w: UNIT_W, h: UNIT_H, label: n.display_name, rate: n.throughput,
         rateStr: fmtRate(n.throughput), nodeType: 'unit', lane: 'UTILITIES',
