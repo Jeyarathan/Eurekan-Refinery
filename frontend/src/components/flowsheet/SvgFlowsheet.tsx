@@ -305,8 +305,9 @@ export function SvgFlowsheet({
               fill={hovUnit === n.id ? C.accentLight : C.white}
               stroke={hovUnit === n.id ? C.accent : C.border}
               strokeWidth={hovUnit === n.id ? 2 : 1.5} />
-            <text x={n.x + 8} y={n.y + 16} fill={C.text} fontSize={11} fontWeight={700}>{n.label}</text>
-            <text x={n.x + n.w - 8} y={n.y + 16} textAnchor="end" fill={C.textDim}
+            <text x={n.x + n.w / 2} y={n.y + 18} textAnchor="middle" fill={C.text}
+              fontSize={11} fontWeight={700}>{n.label}</text>
+            <text x={n.x + n.w / 2} y={n.y + 32} textAnchor="middle" fill={C.textDim}
               fontSize={10} fontFamily={MONO}>{n.rateStr}</text>
             <rect x={n.x + 8} y={n.y + n.h - 8} width={n.w - 16} height={3} rx={1.5} fill="#f3f4f6" />
             <rect x={n.x + 8} y={n.y + n.h - 8}
@@ -330,8 +331,14 @@ export function SvgFlowsheet({
               <rect x={n.x} y={n.y} width={n.w} height={n.h} rx={7}
                 fill={isHov ? C.accentLight : (n.dimmed ? '#f9fafb' : C.white)}
                 stroke={isHov ? C.accent : C.border} strokeWidth={isHov ? 2 : 1.5} />
-              <text x={n.x + 8} y={n.y + 14} fill={C.text} fontSize={10} fontWeight={600}>{n.label}</text>
-              <text x={n.x + n.w - 8} y={n.y + 14} textAnchor="end" fill={C.textDim}
+              {/* Label and rate on SEPARATE lines — label centered on top,
+                   rate centered below. Same-line layout caused long labels
+                   like "Naphtha Splitter" (16 chars, ~95px) to overlap a
+                   right-aligned rate in a 100px box, hiding the leading
+                   digit and making "17K" read as "7K". */}
+              <text x={n.x + n.w / 2} y={n.y + 13} textAnchor="middle"
+                fill={C.text} fontSize={10} fontWeight={600}>{n.label}</text>
+              <text x={n.x + n.w / 2} y={n.y + 25} textAnchor="middle" fill={C.textDim}
                 fontSize={9} fontFamily={MONO}>{n.rateStr}</text>
               {n.badge && (
                 <>
