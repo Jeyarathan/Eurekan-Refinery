@@ -28,7 +28,13 @@ from eurekan.core.results import (
     PeriodResult,
     PlanningResult,
 )
-from eurekan.optimization.builder import _DEFAULT_PRICES, PyomoModelBuilder
+from eurekan.optimization.builder import (
+    _DEFAULT_PRICES,
+    _FCC_S_TO_H2S,
+    _COKER_S_TO_H2S,
+    _HT_S_REMOVAL,
+    PyomoModelBuilder,
+)
 from eurekan.optimization.solver import EurekanSolver, _fcc_yields_at
 
 
@@ -638,30 +644,50 @@ def _build_planning_result(
             if amine_feed_val > 1e-3 or sulfur_out > 1e-3:
                 add_node("amine_1", FlowNodeType.UNIT, "Amine Unit", amine_feed_val)
                 add_node("sru_1", FlowNodeType.UNIT, "SRU", sulfur_out)
-                # H2S contributor edges (magnitudes in LT/D, clearly separate
-                # stream type — the UI styles them as sulfur edges).
+                # H2S contributor edges (LT/D).  Coefficients are assay-driven
+                # (feed_vol * cut_S_per_bbl * removal * 34/32), matching the
+                # LP's amine_balance_con so the UI numbers reconcile with the
+                # solved H2S flow.
+                _, cut_s = PyomoModelBuilder._compute_sulfur_coefficients(config)
+                _h2s_factor = 34.0 / 32.0
                 if "goht_1" in flow_node_ids:
-                    v = _safe_value(model.vgo_to_goht[p]) * 5.0e-5
+                    v = (_safe_value(model.vgo_to_goht[p])
+                         * cut_s["vgo"] * _HT_S_REMOVAL["vgo"] * _h2s_factor)
                     if v > 1e-3:
                         add_edge("goht_1", "amine_1", "H2S", v)
                 if "scanfiner_1" in flow_node_ids:
-                    v = _safe_value(model.hcn_to_scanfiner[p]) * 5.0e-5
+                    v = (_safe_value(model.hcn_to_scanfiner[p])
+                         * cut_s["heavy_naphtha"] * _HT_S_REMOVAL["heavy_naphtha"] * _h2s_factor)
                     if v > 1e-3:
                         add_edge("scanfiner_1", "amine_1", "H2S", v)
                 if "kht_1" in flow_node_ids:
-                    v = _safe_value(model.kero_to_kht[p]) * 5.0e-5
+                    v = (_safe_value(model.kero_to_kht[p])
+                         * cut_s["kerosene"] * _HT_S_REMOVAL["kerosene"] * _h2s_factor)
                     if v > 1e-3:
                         add_edge("kht_1", "amine_1", "H2S", v)
                 if "dht_1" in flow_node_ids:
-                    v = (_safe_value(model.diesel_to_dht[p]) + _safe_value(model.lco_to_dht[p])) * 5.0e-5
+                    dht_vol = _safe_value(model.diesel_to_dht[p]) + _safe_value(model.lco_to_dht[p])
+                    if hasattr(model, "coker_go_to_dht"):
+                        dht_vol += _safe_value(model.coker_go_to_dht[p])
+                    v = dht_vol * cut_s["diesel"] * _HT_S_REMOVAL["diesel"] * _h2s_factor
                     if v > 1e-3:
                         add_edge("dht_1", "amine_1", "H2S", v)
+                if "hcu_1" in flow_node_ids and hasattr(model, "vgo_to_hcu"):
+                    v = (_safe_value(model.vgo_to_hcu[p])
+                         * cut_s["vgo"] * _HT_S_REMOVAL["hcu"] * _h2s_factor)
+                    if v > 1e-3:
+                        add_edge("hcu_1", "amine_1", "H2S", v)
                 if "fcc_1" in flow_node_ids:
-                    v = _safe_value(model.vgo_to_fcc[p]) * 1.0e-5
+                    v = (_safe_value(model.vgo_to_fcc[p])
+                         * cut_s["vgo"] * _FCC_S_TO_H2S * _h2s_factor)
                     if v > 1e-3:
                         add_edge("fcc_1", "amine_1", "H2S", v)
                 if "coker_1" in flow_node_ids and hasattr(model, "coker_feed"):
-                    v = _safe_value(model.coker_feed[p]) * 2.0e-5
+                    v = (_safe_value(model.coker_feed[p])
+                         * cut_s["vacuum_residue"] * _COKER_S_TO_H2S * _h2s_factor)
+                    if hasattr(model, "coker_naphtha_vol"):
+                        v += (_safe_value(model.coker_naphtha_vol[p])
+                              * cut_s["heavy_naphtha"] * _HT_S_REMOVAL["coker_naphtha"] * _h2s_factor)
                     if v > 1e-3:
                         add_edge("coker_1", "amine_1", "H2S", v)
                 # Amine → SRU
