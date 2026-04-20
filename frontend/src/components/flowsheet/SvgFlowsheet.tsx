@@ -71,12 +71,13 @@ interface Props {
   result: PlanningResult
   showFullDiagram?: boolean
   showH2Network?: boolean
+  showUtilities?: boolean
   highlightedNodeId?: string | null
   onNodeClick?: (nodeId: string | null) => void
 }
 
 export function SvgFlowsheet({
-  result, showFullDiagram = false, showH2Network = false,
+  result, showFullDiagram = false, showH2Network = false, showUtilities = false,
   highlightedNodeId = null, onNodeClick,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
@@ -94,16 +95,22 @@ export function SvgFlowsheet({
   const fccConv = period?.fcc_result?.conversion ?? null
 
   const layout = useMemo(
-    () => calculateLayout(flow.nodes, flow.edges, fccConv, showFullDiagram, showH2Network),
-    [flow, fccConv, showFullDiagram, showH2Network],
+    () => calculateLayout(flow.nodes, flow.edges, fccConv, showFullDiagram, showH2Network, showUtilities),
+    [flow, fccConv, showFullDiagram, showH2Network, showUtilities],
   )
 
   // Auto-fit viewBox to content bounds whenever layout changes
   const vb = viewBox ?? layout.bounds
-  // Reset viewBox when showFullDiagram toggles (content bounds change)
+  // Reset viewBox when any of the visibility toggles flip (content bounds change)
   const prevShowFull = useRef(showFullDiagram)
-  if (prevShowFull.current !== showFullDiagram) {
+  const prevShowH2 = useRef(showH2Network)
+  const prevShowUtil = useRef(showUtilities)
+  if (prevShowFull.current !== showFullDiagram
+    || prevShowH2.current !== showH2Network
+    || prevShowUtil.current !== showUtilities) {
     prevShowFull.current = showFullDiagram
+    prevShowH2.current = showH2Network
+    prevShowUtil.current = showUtilities
     // Schedule reset on next render (can't setState during render)
     queueMicrotask(() => setViewBox(layout.bounds))
   }

@@ -6,18 +6,20 @@
 import type { CutProperties } from '../../types'
 
 // Swim lane Y-bands
-// NAPHTHA grew from h=90 to h=140 to cleanly stack arom_reformer above
-// reformer_1 above isom_c56 without label overlap. Downstream lanes
-// shifted down +50 to preserve 30px gaps. UTILITIES (light gray) holds
-// the H2 header bus along the top and plant-fuel / H2-plant units below.
+// LIGHT_ENDS grew from h=70 → h=120 to accommodate 5 units (UGP, SGP,
+// C4 Isom on the top row; Alkylation, Dimersol on the bottom row) after
+// moving alky/dimersol out of the FCC lane (Gulf Coast grouping: they
+// process C3/C4 olefins into gasoline blendstock, not cat-cracking).
+// FCC shrank from h=140 → h=70 since it now holds only FCC, GO HT, and
+// Scanfiner in a single row. Gaps between lanes are a uniform 30px.
 export const LANES = {
-  LIGHT_ENDS: { y: 50, h: 70, label: 'LIGHT ENDS', bg: '#fff9c4' },
-  NAPHTHA:    { y: 140, h: 160, label: 'NAPHTHA PROCESSING', bg: '#e0edff' },
-  FCC:        { y: 330, h: 140, label: 'FCC COMPLEX', bg: '#f3e8ff' },
-  HCU:        { y: 500, h: 60, label: 'HYDROCRACKING', bg: '#ede7f6' },
-  DISTILLATE: { y: 590, h: 90, label: 'DISTILLATE', bg: '#dcfce7' },
-  HEAVY:      { y: 710, h: 70, label: 'HEAVY END', bg: '#fee2e2' },
-  UTILITIES:  { y: 795, h: 80, label: 'UTILITIES', bg: '#f3f4f6' },
+  LIGHT_ENDS: { y: 50,  h: 120, label: 'LIGHT ENDS', bg: '#fff9c4' },
+  NAPHTHA:    { y: 200, h: 160, label: 'NAPHTHA PROCESSING', bg: '#e0edff' },
+  FCC:        { y: 390, h: 70,  label: 'FCC COMPLEX', bg: '#f3e8ff' },
+  HCU:        { y: 490, h: 60,  label: 'HYDROCRACKING', bg: '#ede7f6' },
+  DISTILLATE: { y: 580, h: 90,  label: 'DISTILLATE', bg: '#dcfce7' },
+  HEAVY:      { y: 700, h: 70,  label: 'HEAVY END', bg: '#fee2e2' },
+  UTILITIES:  { y: 800, h: 80,  label: 'UTILITIES', bg: '#f3f4f6' },
 } as const
 
 export type LaneName = keyof typeof LANES
@@ -90,9 +92,12 @@ function fmtRate(r: number): string {
 
 // Assign a swim lane based on unit_id
 function assignLane(id: string): LaneName | undefined {
-  if (['isom_c4', 'ugp_1', 'sgp_1'].some(u => id === u)) return 'LIGHT_ENDS'
+  // Alky and Dimersol are Light Ends per Gulf Coast grouping (CR13 Other
+  // Processing): they upgrade C3/C4 olefins to gasoline blendstock — they
+  // don't crack heavy oil. FCC lane now holds only FCC + GO HT + Scanfiner.
+  if (['isom_c4', 'ugp_1', 'sgp_1', 'alky_1', 'dimersol'].some(u => id === u)) return 'LIGHT_ENDS'
   if (['reformer_1', 'arom_reformer', 'isom_c56', 'splitter_1', 'nht_1'].some(u => id === u)) return 'NAPHTHA'
-  if (['fcc_1', 'goht_1', 'scanfiner_1', 'alky_1', 'dimersol'].some(u => id === u)) return 'FCC'
+  if (['fcc_1', 'goht_1', 'scanfiner_1'].some(u => id === u)) return 'FCC'
   if (id === 'hcu_1') return 'HCU'
   if (['kht_1', 'dht_1'].some(u => id === u)) return 'DISTILLATE'
   if (['vacuum_1', 'coker_1'].some(u => id === u)) return 'HEAVY'
@@ -112,11 +117,9 @@ function assignX(id: string): number {
     isom_c56: COLS.STAGE2,
     goht_1: COLS.STAGE1,
     fcc_1: COLS.STAGE2,
-    // Scanfiner sits on the FCC → gasoline pool path at STAGE3, centered
-    // in the FCC lane. Alky and Dimersol stack above/below (for their
-    // C3/C4 → blender paths) via laneYOffset.
     scanfiner_1: COLS.STAGE3,
-    alky_1: COLS.STAGE3,
+    // Alky and Dimersol live in Light Ends (bottom row) — see laneYOffset.
+    alky_1: COLS.STAGE2,
     dimersol: COLS.STAGE3,
     hcu_1: COLS.STAGE2,
     kht_1: COLS.STAGE1,
@@ -137,23 +140,21 @@ function assignX(id: string): number {
 }
 
 // Y offset within a lane (to avoid stacking on same pixel).
-// NAPHTHA is h=160, center y=220, UNIT_H=38 → yBase=201.
-//   arom_reformer at -45 → y=156 (16px below lane top=140)
-//   reformer_1 at 0 → y=201 (7px gap below arom_reformer)
-//   isom_c56 at +45 → y=246 (7px gap below reformer_1; 16px margin from lane bottom=300)
+// NAPHTHA is h=160, center y=280 (lane y=200), UNIT_H=38 → yBase=261.
+//   arom_reformer at -45, reformer_1 at 0, isom_c56 at +45.
+// LIGHT_ENDS is h=120, center y=110 (lane y=50), UNIT_H=38 → yBase=91.
+//   Top row    (y −24): UGP (S1), SGP (S2), C4 Isom (S3) — gas-side.
+//   Bottom row (y +24): Alky (S2), Dimersol (S3) — gasoline-side.
+//   Row 1 ends at y=105, row 2 starts at y=115 → 10px clear gap.
 function laneYOffset(id: string): number {
-  // FCC lane stack at STAGE3:
-  //   alky_1      (y −45, C3/C4 → gasoline, top)
-  //   scanfiner_1 (y   0, HCN → gasoline, middle, centered on FCC)
-  //   dimersol    (y +45, propylene → gasoline, bottom)
-  // Scanfiner lands on the same horizontal as FCC so the natural
-  // FCC → Scanfiner → Gasoline Pool path reads left-to-right.
   const offsets: Record<string, number> = {
     arom_reformer: -45,
     isom_c56: 45,
-    scanfiner_1: 0,
-    alky_1: -45,
-    dimersol: 45,
+    ugp_1: -24,
+    sgp_1: -24,
+    isom_c4: -24,
+    alky_1: 24,
+    dimersol: 24,
   }
   return offsets[id] ?? 0
 }
@@ -229,7 +230,13 @@ export function calculateLayout(
   fccConversion?: number | null,
   showFullDiagram = true,
   showH2Network = false,
+  showUtilities = false,
 ): LayoutResult {
+  // IDs that live in the Utilities lane (units, processes, and the H2
+  // header). When showUtilities is false we drop these nodes and any
+  // edges touching them so the planning view stays focused on material
+  // flow through process units → pools → products.
+  const UTILITY_NODE_IDS = new Set(['utility_gen', 'pfs_1', 'h2_plant', 'h2_header'])
   const nodes: LayoutNode[] = []
   const edges: LayoutEdge[] = []
 
@@ -333,6 +340,7 @@ export function calculateLayout(
   // Process unit nodes
   units.forEach(n => {
     if (n.node_id === 'cdu_1') return // already added
+    if (!showUtilities && UTILITY_NODE_IDS.has(n.node_id)) return
     const lane = assignLane(n.node_id)
     if (!lane) return
     const laneInfo = LANES[lane]
@@ -367,9 +375,10 @@ export function calculateLayout(
     // H2 header renders as a standard unit node in the UTILITIES lane
     // alongside utility_gen, pfs_1, and h2_plant — no distinct bus/banner
     // styling. Sits at STAGE2 (between utility_gen on the left and pfs_1
-    // on the right).
+    // on the right). Hidden entirely when the Utilities lane is off.
     const t = reconciledThroughput(n)
     if (n.node_id === 'h2_header') {
+      if (!showUtilities) return
       const laneInfo = LANES.UTILITIES
       nodes.push({
         id: n.node_id,
@@ -410,10 +419,11 @@ export function calculateLayout(
     if (!nodeMap.has(e.source_node) || !nodeMap.has(e.dest_node)) return
     const { color, type } = streamColor(e.display_name, e.source_node, e.dest_node)
     // H2 network is hidden by default to reduce visual crossings in the
-    // main material-flow view. The h2_header node stays visible in the
-    // Utilities lane so users see the hub; toggling "Show H2" reveals the
-    // magenta edges between HDS/HCU consumers and h2_plant supply.
+    // main material-flow view. Toggling "Show H2" reveals the magenta
+    // edges between HDS/HCU consumers and h2_plant supply.
     if (!showH2Network && type === 'h2') return
+    // Utility (fuel-gas) edges hide with the Utilities lane.
+    if (!showUtilities && type === 'utility') return
     edges.push({
       id: e.edge_id,
       sourceId: e.source_node,
@@ -465,7 +475,10 @@ export function calculateLayout(
     nodes.filter(n => n.lane && !n.dimmed).map(n => n.lane),
   )
   const visibleLanes = Object.entries(LANES)
-    .filter(([key]) => showFullDiagram || activeNodeLanes.has(key as LaneName))
+    .filter(([key]) => {
+      if (key === 'UTILITIES' && !showUtilities) return false
+      return showFullDiagram || activeNodeLanes.has(key as LaneName)
+    })
     .map(([key, info]) => ({
       id: key,
       label: info.label,

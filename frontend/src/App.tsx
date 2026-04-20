@@ -10,6 +10,7 @@ import {
   Droplets,
   Play,
   Search,
+  Settings2,
   Sparkles,
   Zap,
 } from 'lucide-react'
@@ -70,6 +71,8 @@ function App() {
   const toggleFullDiagram = useRefineryStore((s) => s.toggleFullDiagram)
   const showH2Network = useRefineryStore((s) => s.showH2Network)
   const toggleH2Network = useRefineryStore((s) => s.toggleH2Network)
+  const showUtilities = useRefineryStore((s) => s.showUtilities)
+  const toggleUtilities = useRefineryStore((s) => s.toggleUtilities)
   const startOptimizing = useRefineryStore((s) => s.startOptimizing)
   const finishOptimizing = useRefineryStore((s) => s.finishOptimizing)
 
@@ -193,6 +196,20 @@ function App() {
         >
           <Droplets size={12} />
           {showH2Network ? 'Hide H2' : 'Show H2'}
+        </button>
+
+        {/* Utilities lane toggle */}
+        <button
+          type="button"
+          onClick={toggleUtilities}
+          className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+            showUtilities
+              ? 'border-slate-400 bg-slate-100 text-slate-800'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <Settings2 size={12} />
+          {showUtilities ? 'Hide Utilities' : 'Show Utilities'}
         </button>
 
         {/* Stale indicator */}
@@ -513,6 +530,7 @@ function FlowsheetView({
   const activeResult = useRefineryStore((s) => s.activeResult)
   const showFull = useRefineryStore((s) => s.showFullDiagram)
   const showH2 = useRefineryStore((s) => s.showH2Network)
+  const showUtilitiesLane = useRefineryStore((s) => s.showUtilities)
   const highlightedNodeId = useRefineryStore((s) => s.highlightedNodeId)
 
   if (error) {
@@ -559,6 +577,7 @@ function FlowsheetView({
         result={activeResult}
         showFullDiagram={showFull}
         showH2Network={showH2}
+        showUtilities={showUtilitiesLane}
         highlightedNodeId={highlightedNodeId}
         onNodeClick={onNodeClick}
       />
