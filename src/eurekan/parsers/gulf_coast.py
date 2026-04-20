@@ -240,6 +240,21 @@ PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     # Plant Fuel System — utility sink for fuel gas (C1/C2) collection.
     "SPFS": ("pfs_1", UnitType.UTILITY, "Plant Fuel Sys"),
     "CPFS": ("pfs_1", UnitType.UTILITY, "Plant Fuel Sys"),
+    # Sprint A: Sulfur Complex (Amine + SRU + Tail Gas Treatment).
+    # Capacities are LT/D (long tons per day), not BPD — parse_caps handles
+    # the unit conversion specially for these tags.
+    "CAMN": ("amine_1", UnitType.UTILITY, "Amine Unit"),
+    "CSRU": ("sru_1", UnitType.UTILITY, "SRU"),
+    "CTGT": ("tgt_1", UnitType.UTILITY, "Tail Gas Treatment"),
+}
+
+# Sulfur-complex tags parse capacities in LT/D directly (no ×1000 scaling).
+# When the tag is absent from the Caps sheet, the default below is used.
+_SULFUR_UNIT_TAGS: set[str] = {"CAMN", "CSRU", "CTGT"}
+_SULFUR_UNIT_DEFAULTS: dict[str, float] = {
+    "amine_1": 3.0,   # LT/D H2S
+    "sru_1": 3.0,     # LT/D elemental S
+    "tgt_1": 0.2,     # LT/D residual S
 }
 
 # ProcLim tag → (equipment_limit_key, description)
@@ -571,12 +586,33 @@ class GulfCoastParser:
             name_val = ws.cell(row=row_num, column=2).value
             display_name = str(name_val).strip() if name_val else eurekan_name
 
-            products[eurekan_name] = Product(
-                product_id=eurekan_name,
-                name=display_name,
-                price=price if price is not None else 0.0,
-                min_demand=(min_demand * 1000.0) if min_demand is not None else 0.0,
-                max_demand=(max_demand * 1000.0) if max_demand is not None else None,
+            # Sulfur is priced $/LT and demand in LT/D — no ×1000 scaling.
+            if eurekan_name == "sulfur":
+                products[eurekan_name] = Product(
+                    product_id=eurekan_name,
+                    name=display_name,
+                    price=price if price is not None else 150.0,
+                    min_demand=min_demand if min_demand is not None else 0.0,
+                    max_demand=max_demand,
+                )
+            else:
+                products[eurekan_name] = Product(
+                    product_id=eurekan_name,
+                    name=display_name,
+                    price=price if price is not None else 0.0,
+                    min_demand=(min_demand * 1000.0) if min_demand is not None else 0.0,
+                    max_demand=(max_demand * 1000.0) if max_demand is not None else None,
+                )
+
+        # Sprint A: ensure sulfur product always exists, even if the Sell sheet
+        # lacks a SUP row. Default price $150/LT, unbounded demand.
+        if "sulfur" not in products:
+            products["sulfur"] = Product(
+                product_id="sulfur",
+                name="Sulfur",
+                price=150.0,
+                min_demand=0.0,
+                max_demand=None,
             )
 
         return products
@@ -723,16 +759,28 @@ class GulfCoastParser:
         units: dict[str, UnitConfig] = {}
 
         for pims_tag, (unit_id, unit_type, desc) in PIMS_CAPS_MAP.items():
-            if pims_tag not in row_index:
+            in_sheet = pims_tag in row_index
+            is_sulfur = pims_tag in _SULFUR_UNIT_TAGS
+
+            if not in_sheet and not is_sulfur:
                 continue
 
-            row_num = row_index[pims_tag]
-            min_val = self._cell_value(ws, row_num, min_col) if min_col else None
-            max_val = self._cell_value(ws, row_num, max_col) if max_col else None
+            if in_sheet:
+                row_num = row_index[pims_tag]
+                min_val = self._cell_value(ws, row_num, min_col) if min_col else None
+                max_val = self._cell_value(ws, row_num, max_col) if max_col else None
+            else:
+                min_val = None
+                max_val = None
 
-            # Caps values are in '000 BPD
-            capacity = (max_val * 1000.0) if max_val is not None else 0.0
-            min_tp = (min_val * 1000.0) if min_val is not None else 0.0
+            # Sulfur complex capacities are in LT/D (no ×1000 scaling); all
+            # other PIMS caps are '000 BPD → BPD.
+            if is_sulfur:
+                capacity = max_val if max_val is not None else _SULFUR_UNIT_DEFAULTS.get(unit_id, 0.0)
+                min_tp = min_val if min_val is not None else 0.0
+            else:
+                capacity = (max_val * 1000.0) if max_val is not None else 0.0
+                min_tp = (min_val * 1000.0) if min_val is not None else 0.0
 
             units[unit_id] = UnitConfig(
                 unit_id=unit_id,

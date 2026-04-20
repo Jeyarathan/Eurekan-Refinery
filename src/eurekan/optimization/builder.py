@@ -92,6 +92,26 @@ _SGP_OPEX = 0.30           # $/bbl SGP feed (fractionation energy)
 _BTX_PRICE_PER_TON = 900.0  # $/ton BTX petchem (midpoint of $800-1200)
 _BBL_TO_TON_BTX = 0.870 * 0.159  # spg 0.87, 0.159 m3/bbl
 
+# Sprint A: Sulfur complex (Amine + SRU + Tail Gas Treatment).
+# H2S generation coefficients (LT H2S per bbl throughput).  Calibrated to
+# reflect typical Gulf Coast S distribution: HT captures feedstock S as H2S,
+# FCC liberates ~30% of VGO S, coker ~25% of residue S.
+_HT_H2S_LT_PER_BBL = 5.0e-5
+_FCC_H2S_LT_PER_BBL = 1.0e-5
+_COKER_H2S_LT_PER_BBL = 2.0e-5
+
+# Claus stoichiometry and recovery
+_S_PER_H2S = 32.0 / 34.0         # mass ratio elemental S / H2S
+_AMINE_H2S_REMOVAL = 0.995       # amine captures 99.5% of inlet H2S
+_SRU_RECOVERY = 0.97             # modified Claus 97% S recovery
+_TGT_RECOVERY = 0.90             # 90% of SRU slip captured by TGT
+
+# Economics
+_SULFUR_PRICE_PER_LT = 150.0     # $/LT elemental sulfur
+_AMINE_OPEX_PER_LT = 25.0        # $/LT H2S processed
+_SRU_OPEX_PER_LT = 50.0          # $/LT S produced
+_TGT_OPEX_PER_LT = 80.0          # $/LT residual S treated
+
 # Vacuum unit yield fractions (LVGO + HVGO + VR = 1.0)
 _VAC_LVGO_FRAC = 0.25
 _VAC_HVGO_FRAC = 0.25
@@ -254,6 +274,19 @@ class PyomoModelBuilder:
         self.has_sgp = sgp_unit is not None
         self.sgp_capacity = sgp_unit.capacity if sgp_unit else 0.0
 
+        # Sprint A: Sulfur complex (Amine + SRU + Tail Gas Treatment)
+        amine_unit = config.units.get("amine_1")
+        self.has_amine = amine_unit is not None
+        self.amine_capacity = amine_unit.capacity if amine_unit else 0.0
+
+        sru_unit = config.units.get("sru_1")
+        self.has_sru = sru_unit is not None
+        self.sru_capacity = sru_unit.capacity if sru_unit else 0.0
+
+        tgt_unit = config.units.get("tgt_1")
+        self.has_tgt = tgt_unit is not None
+        self.tgt_capacity = tgt_unit.capacity if tgt_unit else 0.0
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -297,6 +330,8 @@ class PyomoModelBuilder:
             self._add_ugp_constraints(m)
         if self.has_sgp:
             self._add_sgp_constraints(m)
+        if self.has_amine or self.has_sru or self.has_tgt:
+            self._add_sulfur_complex_constraints(m)
         self._add_hydrogen_balance(m)
         self._add_disposition_constraints(m)
         self._add_product_volume_constraints(m)
@@ -473,6 +508,21 @@ class PyomoModelBuilder:
             # Routing: coker GO can go to DHT or fuel oil
             m.coker_go_to_dht = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.coker_go_to_fo = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+
+        # --- Sulfur complex variables (Sprint A) ---
+        # Units are LT/D throughout.  Amine receives H2S from HTs/FCC/coker;
+        # SRU converts H2S to elemental sulfur; TGT recycles SRU tail gas.
+        if self.has_amine or self.has_sru or self.has_tgt:
+            m.amine_feed = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.amine_to_sru = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.amine_slip = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.sru_feed = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.sulfur_produced = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.sru_tail_gas_s = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.tgt_feed = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.tgt_recycle_s = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.s_to_stack = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            m.sulfur_sales = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
 
         # --- Hydrogen balance ---
         m.h2_purchased = pyo.Var(m.PERIODS, bounds=(0.0, 0.15), initialize=0.0)  # MMSCFD
@@ -1095,6 +1145,124 @@ class PyomoModelBuilder:
     # ------------------------------------------------------------------
     # Hydrogen balance
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Sulfur complex constraints (Sprint A)
+    # ------------------------------------------------------------------
+
+    def _add_sulfur_complex_constraints(self, m: pyo.ConcreteModel) -> None:
+        """Amine → SRU → TGT mass balance with capacity limits.
+
+        H2S from hydrotreaters, FCC, and coker enters the amine unit, which
+        concentrates it for the SRU.  The SRU runs modified Claus (~97%
+        recovery); tail gas goes to TGT which recovers ~90% of residual S.
+
+        All flows are LT/D (long tons per day).
+        """
+
+        def h2s_sources_expr(m: Any, p: int) -> Any:
+            """Total H2S production (LT/D) from sulfur-bearing processes."""
+            h2s = 0.0
+            if self.has_goht:
+                h2s += m.vgo_to_goht[p] * _HT_H2S_LT_PER_BBL
+            if self.has_scanfiner:
+                h2s += m.hcn_to_scanfiner[p] * _HT_H2S_LT_PER_BBL
+            if self.has_kht:
+                h2s += m.kero_to_kht[p] * _HT_H2S_LT_PER_BBL
+            if self.has_dht:
+                dht_total = m.diesel_to_dht[p] + m.lco_to_dht[p]
+                if self.has_coker:
+                    dht_total += m.coker_go_to_dht[p]
+                h2s += dht_total * _HT_H2S_LT_PER_BBL
+            if self.has_coker:
+                # Coker NHT burden + coker gas H2S
+                h2s += m.coker_naphtha_vol[p] * _HT_H2S_LT_PER_BBL
+                h2s += m.coker_feed[p] * _COKER_H2S_LT_PER_BBL
+            if self.has_hcu:
+                h2s += m.vgo_to_hcu[p] * _HT_H2S_LT_PER_BBL
+            # FCC liberates ~30% of VGO sulfur as H2S
+            h2s += m.vgo_to_fcc[p] * _FCC_H2S_LT_PER_BBL
+            return h2s
+
+        # --- Amine unit: H2S balance and capacity ---
+        def amine_balance_rule(m: Any, p: int) -> Any:
+            return m.amine_feed[p] == h2s_sources_expr(m, p) + m.tgt_recycle_s[p] / _S_PER_H2S
+        m.amine_balance_con = pyo.Constraint(m.PERIODS, rule=amine_balance_rule)
+
+        if self.has_amine and self.amine_capacity > 0:
+            amine_cap = self.amine_capacity
+
+            def amine_cap_rule(m: Any, p: int) -> Any:
+                return m.amine_to_sru[p] <= amine_cap
+            m.amine_capacity_con = pyo.Constraint(m.PERIODS, rule=amine_cap_rule)
+
+        def amine_split_rule(m: Any, p: int) -> Any:
+            return m.amine_to_sru[p] + m.amine_slip[p] == m.amine_feed[p]
+        m.amine_split_con = pyo.Constraint(m.PERIODS, rule=amine_split_rule)
+
+        # Amine removal efficiency: at most 99.5% of feed is captured.
+        # (A single equality would force full recovery even above capacity,
+        # so express it as an inequality that lets excess slip when the
+        # contactor is saturated.)
+        def amine_eff_rule(m: Any, p: int) -> Any:
+            return m.amine_to_sru[p] <= m.amine_feed[p] * _AMINE_H2S_REMOVAL
+        m.amine_eff_con = pyo.Constraint(m.PERIODS, rule=amine_eff_rule)
+
+        # --- SRU: Claus conversion ---
+        def sru_feed_rule(m: Any, p: int) -> Any:
+            return m.sru_feed[p] == m.amine_to_sru[p]
+        m.sru_feed_def = pyo.Constraint(m.PERIODS, rule=sru_feed_rule)
+
+        def sulfur_yield_rule(m: Any, p: int) -> Any:
+            return m.sulfur_produced[p] == m.sru_feed[p] * _S_PER_H2S * _SRU_RECOVERY
+        m.sru_yield_def = pyo.Constraint(m.PERIODS, rule=sulfur_yield_rule)
+
+        def sru_tail_rule(m: Any, p: int) -> Any:
+            return m.sru_tail_gas_s[p] == m.sru_feed[p] * _S_PER_H2S * (1.0 - _SRU_RECOVERY)
+        m.sru_tail_def = pyo.Constraint(m.PERIODS, rule=sru_tail_rule)
+
+        if self.has_sru and self.sru_capacity > 0:
+            sru_cap = self.sru_capacity
+
+            def sru_cap_rule(m: Any, p: int) -> Any:
+                return m.sulfur_produced[p] <= sru_cap
+            m.sru_capacity_con = pyo.Constraint(m.PERIODS, rule=sru_cap_rule)
+
+        # --- TGT: recover residual S from SRU tail gas ---
+        def tgt_feed_rule(m: Any, p: int) -> Any:
+            return m.tgt_feed[p] == m.sru_tail_gas_s[p]
+        m.tgt_feed_def = pyo.Constraint(m.PERIODS, rule=tgt_feed_rule)
+
+        if self.has_tgt:
+            def tgt_recycle_rule(m: Any, p: int) -> Any:
+                return m.tgt_recycle_s[p] == m.tgt_feed[p] * _TGT_RECOVERY
+            m.tgt_recycle_def = pyo.Constraint(m.PERIODS, rule=tgt_recycle_rule)
+
+            def tgt_stack_rule(m: Any, p: int) -> Any:
+                return m.s_to_stack[p] == m.tgt_feed[p] * (1.0 - _TGT_RECOVERY)
+            m.tgt_stack_def = pyo.Constraint(m.PERIODS, rule=tgt_stack_rule)
+
+            if self.tgt_capacity > 0:
+                tgt_cap = self.tgt_capacity
+
+                def tgt_cap_rule(m: Any, p: int) -> Any:
+                    return m.tgt_feed[p] <= tgt_cap
+                m.tgt_capacity_con = pyo.Constraint(m.PERIODS, rule=tgt_cap_rule)
+        else:
+            # No TGT: no recycle, all SRU tail gas emits to stack
+            def no_tgt_recycle_rule(m: Any, p: int) -> Any:
+                return m.tgt_recycle_s[p] == 0.0
+            m.no_tgt_recycle_con = pyo.Constraint(m.PERIODS, rule=no_tgt_recycle_rule)
+
+            def no_tgt_stack_rule(m: Any, p: int) -> Any:
+                return m.s_to_stack[p] == m.sru_tail_gas_s[p]
+            m.no_tgt_stack_con = pyo.Constraint(m.PERIODS, rule=no_tgt_stack_rule)
+
+        # Sulfur sales == elemental S produced (merchant sulfur market absorbs
+        # whatever we make; demand constraints handled separately).
+        def sulfur_sales_rule(m: Any, p: int) -> Any:
+            return m.sulfur_sales[p] == m.sulfur_produced[p]
+        m.sulfur_sales_con = pyo.Constraint(m.PERIODS, rule=sulfur_sales_rule)
 
     def _add_hydrogen_balance(self, m: pyo.ConcreteModel) -> None:
         """H2 supply >= H2 demand.  Reformer produces H2; HTs consume it."""
@@ -1779,6 +1947,11 @@ class PyomoModelBuilder:
                     extra_opex += m.ugp_feed[p] * _UGP_OPEX
                 if self.has_sgp:
                     extra_opex += m.sgp_feed[p] * _SGP_OPEX
+                if self.has_amine or self.has_sru or self.has_tgt:
+                    extra_credit += m.sulfur_sales[p] * _SULFUR_PRICE_PER_LT
+                    extra_opex += m.amine_feed[p] * _AMINE_OPEX_PER_LT
+                    extra_opex += m.sulfur_produced[p] * _SRU_OPEX_PER_LT
+                    extra_opex += m.tgt_feed[p] * _TGT_OPEX_PER_LT
                 extra_opex += m.h2_purchased[p] * 1500.0           # $1.50/MSCF × 1000
 
                 margin = (

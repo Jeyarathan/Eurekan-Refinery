@@ -19,7 +19,9 @@ export const LANES = {
   HCU:        { y: 490, h: 60,  label: 'HYDROCRACKING', bg: '#ede7f6' },
   DISTILLATE: { y: 580, h: 90,  label: 'DISTILLATE', bg: '#dcfce7' },
   HEAVY:      { y: 700, h: 70,  label: 'HEAVY END', bg: '#fee2e2' },
-  UTILITIES:  { y: 800, h: 80,  label: 'UTILITIES', bg: '#f3f4f6' },
+  // UTILITIES holds two rows after Sprint A (fuel/H2 utilities on top,
+  // sulfur complex on bottom): h=80 → h=100.
+  UTILITIES:  { y: 800, h: 100, label: 'UTILITIES', bg: '#f3f4f6' },
 } as const
 
 export type LaneName = keyof typeof LANES
@@ -42,7 +44,7 @@ export const COLS = {
 } as const
 
 export const SVG_W = 1500
-export const SVG_H = 885
+export const SVG_H = 910
 
 export interface LayoutNode {
   id: string
@@ -104,6 +106,8 @@ function assignLane(id: string): LaneName | undefined {
   if (id === 'pfs_1') return 'UTILITIES'
   if (id === 'h2_plant') return 'UTILITIES'
   if (id === 'utility_gen') return 'UTILITIES'
+  // Sprint A: Sulfur complex lives in the Utilities lane
+  if (id === 'amine_1' || id === 'sru_1' || id === 'tgt_1') return 'UTILITIES'
   return undefined
 }
 
@@ -135,6 +139,11 @@ function assignX(id: string): number {
     utility_gen: COLS.STAGE1,
     pfs_1: COLS.STAGE3,
     h2_plant: COLS.STAGE3,
+    // Sprint A sulfur complex — amine/SRU/TGT cluster on the right
+    // of the Utilities lane to keep H2S flows from crossing the H2 header.
+    amine_1: COLS.STAGE1,
+    sru_1: COLS.STAGE2,
+    tgt_1: COLS.STAGE3,
   }
   return map[id] ?? COLS.STAGE1
 }
@@ -155,6 +164,14 @@ function laneYOffset(id: string): number {
     isom_c4: -24,
     alky_1: 24,
     dimersol: 24,
+    // Utilities lane second row — sulfur complex sits below the fuel gas row
+    // so H2S edges don't overlap the utility_gen → h2_header / pfs_1 flows.
+    amine_1: 24,
+    sru_1: 24,
+    tgt_1: 24,
+    utility_gen: -12,
+    pfs_1: -12,
+    h2_plant: -12,
   }
   return offsets[id] ?? 0
 }
@@ -166,6 +183,17 @@ function streamColor(label: string, sourceId: string, targetId: string): { color
   // dashed lines — they're accounting lines, not material streams.
   if (targetId === 'pfs_1' || sourceId === 'utility_gen' || targetId === 'utility_gen')
     return { color: '#9ca3af', type: 'utility' }
+  // Sprint A: sulfur-complex streams (H2S / tail gas / recycle) render in
+  // amber-yellow so they read distinct from both utility accounting lines
+  // and the H2 network.
+  if (
+    l === 'h2s' || l.includes('h2s') || l.includes('tail gas') ||
+    l.includes('conc. h2s') || l.includes('recycle h2s') || l.includes('elemental s') ||
+    targetId === 'amine_1' || sourceId === 'amine_1' ||
+    targetId === 'sru_1' || sourceId === 'sru_1' ||
+    targetId === 'tgt_1' || sourceId === 'tgt_1'
+  )
+    return { color: '#eab308', type: 'sulfur' }
   // Hydrogen network — distinct magenta to stand out from liquid flows.
   if (l === 'h2' || l.includes('hydrogen') || sourceId === 'h2_header' || targetId === 'h2_header')
     return { color: '#ec4899', type: 'h2' }
@@ -236,7 +264,12 @@ export function calculateLayout(
   // header). When showUtilities is false we drop these nodes and any
   // edges touching them so the planning view stays focused on material
   // flow through process units → pools → products.
-  const UTILITY_NODE_IDS = new Set(['utility_gen', 'pfs_1', 'h2_plant', 'h2_header'])
+  const UTILITY_NODE_IDS = new Set([
+    'utility_gen', 'pfs_1', 'h2_plant', 'h2_header',
+    // Sprint A: sulfur complex shares the Utilities lane — hides with the
+    // "Show Utilities" toggle just like the fuel-gas accounting nodes.
+    'amine_1', 'sru_1', 'tgt_1',
+  ])
   const nodes: LayoutNode[] = []
   const edges: LayoutEdge[] = []
 

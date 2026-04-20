@@ -626,6 +626,60 @@ def _build_planning_result(
                 # SGP fuel gas terminates internally — not a sale stream.
                 _ = sgp_fg
 
+        # Sulfur Complex (Sprint A): Amine → SRU → TGT with H2S inputs from
+        # sulfur-bearing units and an elemental sulfur sale point.  Volumes
+        # are LT/D (long tons per day) in the backend; the flowsheet just
+        # shows them as throughputs on the utility lane.
+        if hasattr(model, "amine_feed"):
+            amine_feed_val = _safe_value(model.amine_feed[p])
+            sulfur_out = _safe_value(model.sulfur_produced[p])
+            tgt_feed_val = _safe_value(model.tgt_feed[p])
+
+            if amine_feed_val > 1e-3 or sulfur_out > 1e-3:
+                add_node("amine_1", FlowNodeType.UNIT, "Amine Unit", amine_feed_val)
+                add_node("sru_1", FlowNodeType.UNIT, "SRU", sulfur_out)
+                # H2S contributor edges (magnitudes in LT/D, clearly separate
+                # stream type — the UI styles them as sulfur edges).
+                if "goht_1" in flow_node_ids:
+                    v = _safe_value(model.vgo_to_goht[p]) * 5.0e-5
+                    if v > 1e-3:
+                        add_edge("goht_1", "amine_1", "H2S", v)
+                if "scanfiner_1" in flow_node_ids:
+                    v = _safe_value(model.hcn_to_scanfiner[p]) * 5.0e-5
+                    if v > 1e-3:
+                        add_edge("scanfiner_1", "amine_1", "H2S", v)
+                if "kht_1" in flow_node_ids:
+                    v = _safe_value(model.kero_to_kht[p]) * 5.0e-5
+                    if v > 1e-3:
+                        add_edge("kht_1", "amine_1", "H2S", v)
+                if "dht_1" in flow_node_ids:
+                    v = (_safe_value(model.diesel_to_dht[p]) + _safe_value(model.lco_to_dht[p])) * 5.0e-5
+                    if v > 1e-3:
+                        add_edge("dht_1", "amine_1", "H2S", v)
+                if "fcc_1" in flow_node_ids:
+                    v = _safe_value(model.vgo_to_fcc[p]) * 1.0e-5
+                    if v > 1e-3:
+                        add_edge("fcc_1", "amine_1", "H2S", v)
+                if "coker_1" in flow_node_ids and hasattr(model, "coker_feed"):
+                    v = _safe_value(model.coker_feed[p]) * 2.0e-5
+                    if v > 1e-3:
+                        add_edge("coker_1", "amine_1", "H2S", v)
+                # Amine → SRU
+                amine_sru = _safe_value(model.amine_to_sru[p])
+                if amine_sru > 1e-3:
+                    add_edge("amine_1", "sru_1", "Conc. H2S", amine_sru)
+                # SRU → sulfur sale
+                if sulfur_out > 1e-3:
+                    add_node("sale_sulfur", FlowNodeType.SALE_POINT, "Sulfur", sulfur_out)
+                    add_edge("sru_1", "sale_sulfur", "Elemental S", sulfur_out)
+                # SRU → TGT → recycle to amine (only if TGT configured)
+                if tgt_feed_val > 1e-3 and "tgt_1" in config.units:
+                    add_node("tgt_1", FlowNodeType.UNIT, "Tail Gas Treatment", tgt_feed_val)
+                    add_edge("sru_1", "tgt_1", "Tail Gas", tgt_feed_val)
+                    tgt_recycle = _safe_value(model.tgt_recycle_s[p])
+                    if tgt_recycle > 1e-3:
+                        add_edge("tgt_1", "amine_1", "Recycle H2S", tgt_recycle)
+
         # Plant Fuel System (pfs_1) — utility sink collecting internal fuel
         # gas streams for plant energy consumption. No economic edge: fuel
         # gas offsets natural-gas purchases already netted into unit opex.
@@ -786,6 +840,12 @@ def _build_planning_result(
                     display = "Sat Gas Plant"
                 elif uid == "pfs_1":
                     display = "Plant Fuel Sys"
+                elif uid == "amine_1":
+                    display = "Amine Unit"
+                elif uid == "sru_1":
+                    display = "SRU"
+                elif uid == "tgt_1":
+                    display = "Tail Gas Treatment"
                 elif uid == "kht_1":
                     display = "Kero HT"
                 elif uid == "dht_1":
@@ -806,7 +866,12 @@ def _build_planning_result(
                     display = "Coker"
                 elif uid == "hcu_1" or "hcu" in uid:
                     display = "Hydrocracker"
-                node_type = FlowNodeType.PROCESS if uid == "pfs_1" else FlowNodeType.UNIT
+                sulfur_complex_uids = {"amine_1", "sru_1", "tgt_1"}
+                node_type = (
+                    FlowNodeType.PROCESS
+                    if uid == "pfs_1" or uid in sulfur_complex_uids
+                    else FlowNodeType.UNIT
+                )
                 add_node(uid, node_type, display, 0.0)
 
         # Potential (zero-volume) edges for idle units — shown dimmed in
@@ -901,6 +966,19 @@ def _build_planning_result(
             for src in ("ugp_1", "sgp_1", "fcc_1", "reformer_1", "coker_1", "hcu_1"):
                 if src in flow_node_ids:
                     add_potential_edge(src, "pfs_1", "Fuel Gas")
+
+        # Sulfur complex topology (Sprint A): H2S contributors → amine → SRU → TGT
+        if "amine_1" in flow_node_ids:
+            for src in ("goht_1", "scanfiner_1", "kht_1", "dht_1", "fcc_1", "coker_1", "hcu_1"):
+                if src in flow_node_ids:
+                    add_potential_edge(src, "amine_1", "H2S")
+            if "sru_1" in flow_node_ids:
+                add_potential_edge("amine_1", "sru_1", "Conc. H2S")
+        if "sru_1" in flow_node_ids:
+            if "tgt_1" in flow_node_ids:
+                add_potential_edge("sru_1", "tgt_1", "Tail Gas")
+        if "tgt_1" in flow_node_ids and "amine_1" in flow_node_ids:
+            add_potential_edge("tgt_1", "amine_1", "Recycle H2S")
 
         # CDU dispositions in CDU yields (cuts)
         cdu_cuts = {
