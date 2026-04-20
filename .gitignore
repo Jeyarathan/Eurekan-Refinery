@@ -52,3 +52,7 @@ coverage.xml
 
 # mypy
 .mypy_cache/
+
+# Scratch JSX prototypes (not committed)
+eurekan_complete.jsx
+eurekan_flowsheet_streams.jsx
