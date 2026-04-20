@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import type { PlanningResult } from '../../types'
-import { calculateLayout, SVG_W, SVG_H, COLS, type LayoutNode, type LayoutEdge, type ContentBounds } from './layoutEngine'
+import { calculateLayout, COLS, type LayoutNode, type LayoutEdge, type ContentBounds } from './layoutEngine'
 import { routePath, pathToSvg, pathMidpoint } from './pathRouter'
 
 // Design tokens matching reference
