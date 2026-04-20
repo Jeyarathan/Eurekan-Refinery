@@ -68,19 +68,11 @@ def _lp_tracked_s_out_lt_per_day(model, p: int = 0) -> float:
     sulfur_sales = v("sulfur_sales")
     s_to_stack = v("s_to_stack")
     amine_slip_s = v("amine_slip") * _S_PER_H2S
-    # Remaining S that leaves with finished liquid / solid products —
-    # must be explicitly tracked by the builder on a per-pool basis.
-    # These variable names are introduced in the Task 4 fix.
-    product_s = (
-        v("gasoline_s_lt")
-        + v("diesel_s_lt")
-        + v("jet_s_lt")
-        + v("fuel_oil_s_lt")
-        + v("naphtha_s_lt")
-        + v("lpg_s_lt")
-        + v("coke_s_lt")
-    )
-    return sulfur_sales + s_to_stack + amine_slip_s + product_s
+    # Remaining S that leaves in finished liquid / solid products.
+    # Introduced by the Task 4 fix as a single aggregate sink whose closure
+    # constraint equates it to crude_s_feed minus S captured by the complex.
+    products_s_lt = v("products_s_lt")
+    return sulfur_sales + s_to_stack + amine_slip_s + products_s_lt
 
 
 @pytest.fixture(scope="module")

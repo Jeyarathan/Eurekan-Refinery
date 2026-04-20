@@ -240,21 +240,27 @@ PIMS_CAPS_MAP: dict[str, tuple[str, UnitType, str]] = {
     # Plant Fuel System — utility sink for fuel gas (C1/C2) collection.
     "SPFS": ("pfs_1", UnitType.UTILITY, "Plant Fuel Sys"),
     "CPFS": ("pfs_1", UnitType.UTILITY, "Plant Fuel Sys"),
-    # Sprint A: Sulfur Complex (Amine + SRU + Tail Gas Treatment).
-    # Capacities are LT/D (long tons per day), not BPD — parse_caps handles
-    # the unit conversion specially for these tags.
+    # Sprint A.1: Sulfur Complex (Amine + SRU + Tail Gas Treatment).
+    # The Caps sheet header declares a single ('000) multiplier that applies
+    # to every numeric cell in the table, regardless of whether the row's
+    # engineering unit is BPD, TPD, MMSCFD, or LT/D.  Sprint A mistakenly
+    # treated the three sulfur rows as already in engineering units and
+    # produced a 3 LT/D / 3 LT/D / 0.2 LT/D sulfur complex — hobby scale.
+    # The real sizing is 3,000 / 3,000 / 200 LT/D (documented in
+    # docs/reference/caps_sulfur_rows.md), so these rows now go through
+    # the same ×1000 path as every other capacity row.
     "CAMN": ("amine_1", UnitType.UTILITY, "Amine Unit"),
     "CSRU": ("sru_1", UnitType.UTILITY, "SRU"),
     "CTGT": ("tgt_1", UnitType.UTILITY, "Tail Gas Treatment"),
 }
 
-# Sulfur-complex tags parse capacities in LT/D directly (no ×1000 scaling).
-# When the tag is absent from the Caps sheet, the default below is used.
+# When the sulfur-complex tags are absent from the Caps sheet, these
+# engineering-unit defaults (already in LT/D, no ×1000 implied) are used.
 _SULFUR_UNIT_TAGS: set[str] = {"CAMN", "CSRU", "CTGT"}
 _SULFUR_UNIT_DEFAULTS: dict[str, float] = {
-    "amine_1": 3.0,   # LT/D H2S
-    "sru_1": 3.0,     # LT/D elemental S
-    "tgt_1": 0.2,     # LT/D residual S
+    "amine_1": 3000.0,   # LT/D H2S inlet
+    "sru_1": 3000.0,     # LT/D H2S inlet (Claus plant)
+    "tgt_1": 200.0,      # LT/D S inlet to TGT
 }
 
 # ProcLim tag → (equipment_limit_key, description)
@@ -773,11 +779,13 @@ class GulfCoastParser:
                 min_val = None
                 max_val = None
 
-            # Sulfur complex capacities are in LT/D (no ×1000 scaling); all
-            # other PIMS caps are '000 BPD → BPD.
-            if is_sulfur:
-                capacity = max_val if max_val is not None else _SULFUR_UNIT_DEFAULTS.get(unit_id, 0.0)
-                min_tp = min_val if min_val is not None else 0.0
+            # The Caps sheet's single ('000) multiplier applies uniformly.
+            # Sulfur-row engineering units are LT/D instead of BPD, but the
+            # ×1000 scaling is the same: "3" in the sheet == 3,000 LT/D.
+            if is_sulfur and max_val is None:
+                # Absent from sheet — use the engineering-unit default as-is.
+                capacity = _SULFUR_UNIT_DEFAULTS.get(unit_id, 0.0)
+                min_tp = 0.0
             else:
                 capacity = (max_val * 1000.0) if max_val is not None else 0.0
                 min_tp = (min_val * 1000.0) if min_val is not None else 0.0

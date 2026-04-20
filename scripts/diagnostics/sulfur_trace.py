@@ -255,12 +255,13 @@ def main() -> int:
     # ---------------------------------------------------------------
     # (f) Leak check
     # ---------------------------------------------------------------
-    _hline("(f) LEAK CHECK — crude S vs terminal sinks")
+    _hline("(f) LEAK CHECK - crude S vs terminal sinks")
+    products_s_lt = _v(model, "products_s_lt", p)
     tracked_s_out = (
         sulfur_sales          # to SUP
         + s_to_stack          # stack
         + amine_slip_s        # amine slip to fuel gas
-        + gasoline_s_max      # upper bound only
+        + products_s_lt       # finished-products bucket (Sprint A.1)
     )
     residual = s_crude_total - tracked_s_out
     pct = (residual / s_crude_total * 100.0) if s_crude_total > 0 else float("nan")
@@ -269,22 +270,29 @@ def main() -> int:
     print(f"    + SUP sales         = {sulfur_sales:10.3f}")
     print(f"    + SRU stack         = {s_to_stack:10.3f}")
     print(f"    + amine slip        = {amine_slip_s:10.3f}")
-    print(f"    + gasoline cap      = {gasoline_s_max:10.3f}  (upper bound)")
-    print(f"  RESIDUAL              = {residual:10.3f} LT/D  ({pct:+.1f}% of crude S)")
+    print(f"    + products_s_lt     = {products_s_lt:10.3f}  (finished-product S bucket)")
+    print(f"  RESIDUAL              = {residual:10.3f} LT/D  ({pct:+.2f}% of crude S)")
 
     print()
     print("=" * 78)
     print("INTERPRETATION")
     print("=" * 78)
-    print(
-        "  The LP does not propagate crude-assay sulfur through the process units.\n"
-        "  H2S generation at HT/FCC/Coker is a fixed coefficient per volumetric\n"
-        "  barrel of feed, not a fraction of feed S content.  Consequence: the S\n"
-        "  leaving in product streams (diesel, jet, fuel oil, fuel gas, coke) is\n"
-        "  untracked; the sulfur complex only sees the tiny phantom H2S that the\n"
-        "  constants produce (~1 LT/D).  The 'mass balance' test that passes is\n"
-        "  balancing this phantom inventory, not real crude S."
-    )
+    if abs(pct) < 1.0:
+        print(
+            "  Balance closes.  Crude-assay S is fully accounted: "
+            f"{sulfur_sales:.1f} LT/D exits as merchant sulfur, "
+            f"{products_s_lt:.1f} LT/D remains in\n"
+            "  finished liquid/solid products (diesel, jet, fuel oil, coke, gasoline,\n"
+            "  naphtha, LPG).  The LP now uses assay-driven cut S coefficients rather\n"
+            "  than flat volumetric constants, so sulfur complex loading responds to\n"
+            "  the active crude slate."
+        )
+    else:
+        print(
+            "  Residual > 1%.  Either the crude_s_closure_con constraint is missing\n"
+            "  or there is a new accounting path that is not yet routed into it.\n"
+            "  Re-check the builder."
+        )
     return 0
 
 

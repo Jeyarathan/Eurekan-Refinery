@@ -93,12 +93,30 @@ _BTX_PRICE_PER_TON = 900.0  # $/ton BTX petchem (midpoint of $800-1200)
 _BBL_TO_TON_BTX = 0.870 * 0.159  # spg 0.87, 0.159 m3/bbl
 
 # Sprint A: Sulfur complex (Amine + SRU + Tail Gas Treatment).
-# H2S generation coefficients (LT H2S per bbl throughput).  Calibrated to
-# reflect typical Gulf Coast S distribution: HT captures feedstock S as H2S,
-# FCC liberates ~30% of VGO S, coker ~25% of residue S.
+# H2S generation coefficients (LT H2S per bbl throughput).  Sprint A used
+# flat volumetric constants that were independent of crude-assay S; Sprint
+# A.1 replaces that with an assay-driven model (see
+# ``_compute_sulfur_coefficients`` and ``_HT_S_REMOVAL``).  These legacy
+# constants are still imported by the diagnostic script for reference.
 _HT_H2S_LT_PER_BBL = 5.0e-5
 _FCC_H2S_LT_PER_BBL = 1.0e-5
 _COKER_H2S_LT_PER_BBL = 2.0e-5
+
+# Sprint A.1: per-unit S removal / liberation fractions.  These determine
+# how much of the feed-cut's elemental S each conversion unit strips into
+# H2S (with the balance staying in liquid products / coke and closing
+# against the products_s_lt sink).  Values reflect standard industry
+# ranges for Gulf Coast hydroprocessing.
+_HT_S_REMOVAL: dict[str, float] = {
+    "kerosene": 0.92,        # KHT
+    "diesel":   0.95,        # DHT (ULSD duty, near-total)
+    "vgo":      0.92,        # GO HDT / HCU feed prep
+    "heavy_naphtha": 0.95,   # NHT / Scanfiner for FCC naphtha
+    "coker_naphtha": 0.95,   # coker naphtha HT
+    "hcu":      0.97,        # HCU high-severity
+}
+_FCC_S_TO_H2S = 0.30         # ~30% of VGO feed S -> H2S at the FCC
+_COKER_S_TO_H2S = 0.20       # ~20% of vac-resid S -> H2S in coker gas
 
 # Claus stoichiometry and recovery
 _S_PER_H2S = 32.0 / 34.0         # mass ratio elemental S / H2S
@@ -287,6 +305,20 @@ class PyomoModelBuilder:
         self.has_tgt = tgt_unit is not None
         self.tgt_capacity = tgt_unit.capacity if tgt_unit else 0.0
 
+        # Sprint A.1: per-crude and per-cut elemental-S mass coefficients
+        # precomputed from assay data.  These let the LP track sulfur as a
+        # linear expression in crude_rate without per-route decisions.
+        #
+        #   _crude_s_lt_per_bbl[c]     — LT S per bbl of crude c
+        #   _cut_s_lt_per_bbl[k]       — LT S per bbl of cut k (library-
+        #                                weighted average S content of cut k)
+        #
+        # Used to replace Sprint A's volumetric H2S constants with
+        # assay-driven values, and to close the integrity balance.
+        self._crude_s_lt_per_bbl, self._cut_s_lt_per_bbl = (
+            self._compute_sulfur_coefficients(config)
+        )
+
         # Identify product tanks: any tank whose tank_id contains a product name
         self.product_tanks: dict[str, Any] = {}
         for tank_id, tank in config.tanks.items():
@@ -342,6 +374,72 @@ class PyomoModelBuilder:
         self._apply_unit_status(m)
 
         return m
+
+    # ------------------------------------------------------------------
+    # Sulfur coefficients (Sprint A.1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_sulfur_coefficients(
+        config: "RefineryConfig",
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """Precompute per-crude and per-cut elemental-S mass coefficients.
+
+        Returns:
+            crude_s_lt_per_bbl: {crude_id: LT S per bbl of whole crude}
+            cut_s_lt_per_bbl:   {cut_name: LT S per bbl of cut k}, weighted
+                                over the library by ``max_rate``.
+
+        Basis: 1 bbl = 0.158987 m³, water density 1000 kg/m³, 1 LT = 1016.047
+        kg.  Per-cut S content uses the cut's own API (falls back to whole-
+        crude API) and its ``properties.sulfur`` wt% (falls back to 0).
+        """
+        bbl_m3 = 0.158987
+        water_kg_m3 = 1000.0
+        kg_per_lt = 1016.047
+        cut_names = [
+            "lpg", "light_naphtha", "heavy_naphtha", "kerosene",
+            "diesel", "vgo", "vacuum_residue",
+        ]
+
+        def api_to_spg(api: float) -> float:
+            return 141.5 / ((api or 30.0) + 131.5)
+
+        crude_s: dict[str, float] = {}
+        # Accumulate weighted cut S for library average
+        weighted_cut_s_per_bbl_cut: dict[str, float] = {k: 0.0 for k in cut_names}
+        total_weight = 0.0
+        for cid in config.crude_library.list_crudes():
+            assay = config.crude_library.get(cid)
+            if assay is None:
+                continue
+            # Whole-crude S/bbl
+            crude_spg = api_to_spg(assay.api or 30.0)
+            crude_mass_lt_per_bbl = bbl_m3 * water_kg_m3 * crude_spg / kg_per_lt
+            s_wt_frac = (assay.sulfur or 0.0) / 100.0
+            crude_s[cid] = crude_mass_lt_per_bbl * s_wt_frac
+
+            weight = max(assay.max_rate or 0.0, 0.0)
+            total_weight += weight
+            for cut in assay.cuts:
+                if cut.name not in weighted_cut_s_per_bbl_cut:
+                    continue
+                cut_api = (cut.properties.api if cut.properties else None) or assay.api or 30.0
+                cut_spg = api_to_spg(cut_api)
+                cut_mass_lt_per_bbl = bbl_m3 * water_kg_m3 * cut_spg / kg_per_lt
+                cut_s_wt = (
+                    (cut.properties.sulfur if cut.properties else None) or 0.0
+                ) / 100.0
+                weighted_cut_s_per_bbl_cut[cut.name] += (
+                    weight * cut_mass_lt_per_bbl * cut_s_wt
+                )
+
+        cut_s: dict[str, float] = {}
+        for k in cut_names:
+            cut_s[k] = (
+                weighted_cut_s_per_bbl_cut[k] / total_weight if total_weight > 0 else 0.0
+            )
+        return crude_s, cut_s
 
     # ------------------------------------------------------------------
     # Variables
@@ -523,6 +621,11 @@ class PyomoModelBuilder:
             m.tgt_recycle_s = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.s_to_stack = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
             m.sulfur_sales = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
+            # Sprint A.1: bucket of elemental S leaving the refinery in
+            # finished liquid/solid products (gasoline, diesel, jet, fuel
+            # oil, naphtha, LPG, coke).  Closed against crude_s_feed so
+            # that total S accounting is crude-assay-consistent.
+            m.products_s_lt = pyo.Var(m.PERIODS, bounds=(0.0, _BIG_M), initialize=0.0)
 
         # --- Hydrogen balance ---
         m.h2_purchased = pyo.Var(m.PERIODS, bounds=(0.0, 0.15), initialize=0.0)  # MMSCFD
@@ -1157,32 +1260,59 @@ class PyomoModelBuilder:
         concentrates it for the SRU.  The SRU runs modified Claus (~97%
         recovery); tail gas goes to TGT which recovers ~90% of residual S.
 
+        Sprint A.1: H2S generation is now driven by crude-assay S content
+        (library-weighted average cut S wt%), not by flat volumetric
+        constants.  The ``products_s_lt`` bucket absorbs the residual S
+        that stays in finished products, closing the crude-feed balance.
+
         All flows are LT/D (long tons per day).
         """
+        s_cut = self._cut_s_lt_per_bbl  # LT S / bbl of cut
+        s_to_h2s = 34.0 / 32.0           # kg H2S per kg S liberated
 
         def h2s_sources_expr(m: Any, p: int) -> Any:
-            """Total H2S production (LT/D) from sulfur-bearing processes."""
+            """Total H2S production (LT/D) from sulfur-bearing processes.
+
+            Each term is feed_volume × cut_S_per_bbl × unit_removal × 34/32.
+            Coefficients are library-weighted averages; actual-slate
+            variation is absorbed by the products_s_lt closure.
+            """
             h2s = 0.0
             if self.has_goht:
-                h2s += m.vgo_to_goht[p] * _HT_H2S_LT_PER_BBL
+                h2s += (m.vgo_to_goht[p] * s_cut["vgo"]
+                        * _HT_S_REMOVAL["vgo"] * s_to_h2s)
             if self.has_scanfiner:
-                h2s += m.hcn_to_scanfiner[p] * _HT_H2S_LT_PER_BBL
+                h2s += (m.hcn_to_scanfiner[p] * s_cut["heavy_naphtha"]
+                        * _HT_S_REMOVAL["heavy_naphtha"] * s_to_h2s)
             if self.has_kht:
-                h2s += m.kero_to_kht[p] * _HT_H2S_LT_PER_BBL
+                h2s += (m.kero_to_kht[p] * s_cut["kerosene"]
+                        * _HT_S_REMOVAL["kerosene"] * s_to_h2s)
             if self.has_dht:
                 dht_total = m.diesel_to_dht[p] + m.lco_to_dht[p]
                 if self.has_coker:
                     dht_total += m.coker_go_to_dht[p]
-                h2s += dht_total * _HT_H2S_LT_PER_BBL
+                h2s += (dht_total * s_cut["diesel"]
+                        * _HT_S_REMOVAL["diesel"] * s_to_h2s)
             if self.has_coker:
-                # Coker NHT burden + coker gas H2S
-                h2s += m.coker_naphtha_vol[p] * _HT_H2S_LT_PER_BBL
-                h2s += m.coker_feed[p] * _COKER_H2S_LT_PER_BBL
+                # Coker naphtha HT + coker gas H2S (fraction of vac-resid S)
+                h2s += (m.coker_naphtha_vol[p] * s_cut["heavy_naphtha"]
+                        * _HT_S_REMOVAL["coker_naphtha"] * s_to_h2s)
+                h2s += (m.coker_feed[p] * s_cut["vacuum_residue"]
+                        * _COKER_S_TO_H2S * s_to_h2s)
             if self.has_hcu:
-                h2s += m.vgo_to_hcu[p] * _HT_H2S_LT_PER_BBL
+                h2s += (m.vgo_to_hcu[p] * s_cut["vgo"]
+                        * _HT_S_REMOVAL["hcu"] * s_to_h2s)
             # FCC liberates ~30% of VGO sulfur as H2S
-            h2s += m.vgo_to_fcc[p] * _FCC_H2S_LT_PER_BBL
+            h2s += (m.vgo_to_fcc[p] * s_cut["vgo"]
+                    * _FCC_S_TO_H2S * s_to_h2s)
             return h2s
+
+        def crude_s_feed_expr(m: Any, p: int) -> Any:
+            """LT/D of elemental S entering CDU from the active crude slate."""
+            return sum(
+                m.crude_rate[c, p] * self._crude_s_lt_per_bbl.get(c, 0.0)
+                for c in m.CRUDES
+            )
 
         # --- Amine unit: H2S balance and capacity ---
         def amine_balance_rule(m: Any, p: int) -> Any:
@@ -1263,6 +1393,22 @@ class PyomoModelBuilder:
         def sulfur_sales_rule(m: Any, p: int) -> Any:
             return m.sulfur_sales[p] == m.sulfur_produced[p]
         m.sulfur_sales_con = pyo.Constraint(m.PERIODS, rule=sulfur_sales_rule)
+
+        # Sprint A.1: crude-feed S closure.
+        # Every LT of S entering with crude must leave the refinery through
+        # exactly one of: SUP sales, SRU stack, amine slip to fuel gas, or
+        # in finished liquid/solid products.  ``products_s_lt`` is a free
+        # variable that absorbs the complement; this turns an untracked
+        # leak into an auditable sink without constraining LP optimization.
+        def crude_s_closure_rule(m: Any, p: int) -> Any:
+            return (
+                crude_s_feed_expr(m, p)
+                == m.sulfur_sales[p]
+                + m.s_to_stack[p]
+                + m.amine_slip[p] * _S_PER_H2S
+                + m.products_s_lt[p]
+            )
+        m.crude_s_closure_con = pyo.Constraint(m.PERIODS, rule=crude_s_closure_rule)
 
     def _add_hydrogen_balance(self, m: pyo.ConcreteModel) -> None:
         """H2 supply >= H2 demand.  Reformer produces H2; HTs consume it."""
